@@ -1,0 +1,29 @@
+services:
+  kaspi:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATA_DIR: /app/data
+    ports:
+      - '127.0.0.1:${PORT:-3000}:3000'
+    volumes:
+      - kaspi-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  kaspi-data:

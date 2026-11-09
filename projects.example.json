@@ -1,0 +1,18 @@
+[
+  {
+    "id": "shop",
+    "apiKeyEnv": "SHOP_API_KEY",
+    "webhooks": [
+      {
+        "url": "https://shop.example.com/api/kaspi/webhook",
+        "events": ["payment.success", "payment.failed", "payment.expired", "payment.lost"],
+        "secretEnv": "SHOP_WEBHOOK_SECRET"
+      }
+    ]
+  },
+  {
+    "id": "booking",
+    "apiKeyEnv": "BOOKING_API_KEY",
+    "webhooks": []
+  }
+]

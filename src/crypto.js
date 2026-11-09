@@ -1,11 +1,14 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import {fileURLToPath} from 'url';
-import {ecKeyPair} from './config.js';
+import { DATA_DIR } from './paths.js';
+import { ecKeyPair } from './config.js';
+import { getIdentity } from './identity.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ECDH_FILE = path.join(__dirname, '..', 'ecdh-keypair.json');
+const ecdhFileFor = (projectId) => {
+  const directory = projectId ? getIdentity(projectId).directory : DATA_DIR;
+  return path.join(directory, 'ecdh-keypair.json');
+};
 
 // ─── ECDH ───
 
@@ -13,9 +16,9 @@ const vtokenSuite = 'OCRA-1:HOTP-SHA256-6:QH64-T1M';
 
 // ─── AES-256-GCM encryption for vtokenSecret ───
 
-if (!process.env.TOKEN_SECRET_KEY) {
-  console.error('FATAL: TOKEN_SECRET_KEY environment variable is not set.');
-  console.error('Generate one with: echo "TOKEN_SECRET_KEY=$(openssl rand -hex 32)" > .env');
+if (!/^[a-fA-F0-9]{64}$/.test(process.env.TOKEN_SECRET_KEY || '')) {
+  console.error('FATAL: TOKEN_SECRET_KEY must be exactly 64 hexadecimal characters.');
+  console.error('Generate a value with openssl rand -hex 32 and set TOKEN_SECRET_KEY in .env.');
   process.exit(1);
 }
 const ENCRYPTION_KEY = Buffer.from(process.env.TOKEN_SECRET_KEY, 'hex');
@@ -38,39 +41,20 @@ export const decryptSecret = (tokenB64) => {
   return Buffer.concat([decipher.update(encrypted), decipher.final()]);
 };
 
-let lastEcdhKeyPair = null;
-
-export const generateECDH = () => {
-  lastEcdhKeyPair = crypto.generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
+export const generateECDH = (projectId) => {
+  const ecdhKeyPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   // Persist ECDH private key so refresh (SignInLite) can reuse it
   const saved = {
-    privateKey: lastEcdhKeyPair.privateKey.export({type: 'pkcs8', format: 'der'}).toString('base64'),
-    publicKey: lastEcdhKeyPair.publicKey.export({type: 'spki', format: 'der'}).toString('base64'),
+    privateKey: ecdhKeyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
+    publicKey: ecdhKeyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
   };
-  fs.writeFileSync(ECDH_FILE, JSON.stringify(saved, null, 2));
-  const spki = lastEcdhKeyPair.publicKey.export({type: 'spki', format: 'der'});
+  fs.writeFileSync(ecdhFileFor(projectId), JSON.stringify(saved, null, 2), { mode: 0o600 });
+  const spki = ecdhKeyPair.publicKey.export({ type: 'spki', format: 'der' });
   return spki.toString('base64');
 };
 
-export const completeECDH = (serverX509B64) => {
-  if (!lastEcdhKeyPair) throw new Error('No ECDH keypair generated');
-  const serverPubKey = crypto.createPublicKey({
-    key: Buffer.from(serverX509B64, 'base64'),
-    format: 'der',
-    type: 'spki',
-  });
-  const secret = crypto.diffieHellman({
-    privateKey: lastEcdhKeyPair.privateKey,
-    publicKey: serverPubKey,
-  });
-  console.log('ECDH shared secret derived, length:', secret.length);
-  lastEcdhKeyPair = null;
-  return secret;
-};
-
-export const completeECDHWithSaved = (serverX509B64) => {
-  if (!fs.existsSync(ECDH_FILE)) throw new Error('No saved ECDH keypair (ecdh-keypair.json missing)');
-  const saved = JSON.parse(fs.readFileSync(ECDH_FILE, 'utf8'));
+export const completeECDH = (serverX509B64, projectId) => {
+  const saved = JSON.parse(fs.readFileSync(ecdhFileFor(projectId), 'utf8'));
   const privateKey = crypto.createPrivateKey({
     key: Buffer.from(saved.privateKey, 'base64'),
     format: 'der',
@@ -81,10 +65,10 @@ export const completeECDHWithSaved = (serverX509B64) => {
     format: 'der',
     type: 'spki',
   });
-  const secret = crypto.diffieHellman({privateKey, publicKey: serverPubKey});
-  console.log('ECDH (saved key) shared secret derived, length:', secret.length);
-  return secret;
+  return crypto.diffieHellman({ privateKey, publicKey: serverPubKey });
 };
+
+export const completeECDHWithSaved = completeECDH;
 
 // ─── Helpers ───
 
@@ -134,18 +118,18 @@ export const computeTokenSnMac = (tokenSN, secret) => {
 
 // ─── ECDSA signing ───
 
-export const ecSign = (data) => {
+export const ecSign = (data, keyPair = ecKeyPair) => {
   const sign = crypto.createSign('SHA256');
   sign.update(data);
   sign.end();
-  return sign.sign(ecKeyPair.privateKey).toString('base64');
+  return sign.sign(keyPair.privateKey).toString('base64');
 };
 
-export const signDataPayload = (dataB64) => ecSign(dataB64);
+export const signDataPayload = (dataB64, keyPair) => ecSign(dataB64, keyPair);
 
 export const computeXSU = (url) => crypto.createHash('md5').update(url.toLowerCase()).digest('hex');
 
-export const computeXSign = (url, headers, xshList, body) => {
+export const computeXSign = (url, headers, xshList, body, keyPair) => {
   const keys = xshList.split(',');
   const lines = [];
   for (const name of keys) {
@@ -160,5 +144,5 @@ export const computeXSign = (url, headers, xshList, body) => {
     signText += '\n' + body;
   }
   const hash = crypto.createHash('sha256').update(signText, 'utf8').digest();
-  return ecSign(hash);
+  return ecSign(hash, keyPair);
 };

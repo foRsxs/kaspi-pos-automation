@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { DATA_DIR } from './paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOGS_DIR = path.join(__dirname, '..', 'logs');
+const LOGS_DIR = path.join(DATA_DIR, 'logs');
 
 // Ensure logs directory exists
 if (!fs.existsSync(LOGS_DIR)) {

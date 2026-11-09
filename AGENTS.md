@@ -1,21 +1,26 @@
-# Project Guidelines
+# Правила проекта
 
-## Build & Configuration
+## Сборка и конфигурация
 
-- **Node.js ≥ 20.6** required (ES modules via `"type": "module"`).
-- Create `.env` with `TOKEN_SECRET_KEY` (64-char hex, 32 bytes) before first run — see `.env.example`.
-- On first `npm start`, `keypair.json` and `device.json` are auto-generated (gitignored).
-- Regenerate via `npm run regen:keypair` / `npm run regen:device` (invalidates sessions).
+- Требуется Node.js ≥ 24; проект использует ES-модули (`"type": "module"`).
+- Перед первым запуском заполните `.env`: `TOKEN_SECRET_KEY` и `ADMIN_API_KEY`. Проекты, API-ключи и вебхуки создаются в админке; SQLite `DATA_DIR/projects.sqlite` — единственный источник этих настроек. Старый `projects.json`/env импортируется один раз в новую базу, отсутствие файла допустимо.
+- Файлы идентичности и банковской сессии каждого проекта хранятся отдельно в `DATA_DIR/projects/<id>/`: `keypair.json`, `device.json`, `ecdh-keypair.json`, `merchant-session.json`.
+- Чтобы обновить идентичность проекта, используйте `npm run regen:keypair -- <id>` или `npm run regen:device -- <id>`. Затем перезапустите сервер и пройдите SMS-вход для этого проекта.
 
-## Architecture
+## Архитектура
 
-- **Entry point**: `server.js` — Express, routes under `/api/*`, static `public/`.
-- **Source**: `src/config.js`, `src/crypto.js`, `src/helpers.js`, `src/session.js`.
-- **Routes**: `src/routes/{auth,invoice,qr,history,refund}.js`.
-- **Stateless after auth** — temp in-memory `Map` only during 3-step SMS flow; after that, session data lives on the client side (encrypted headers).
+- **Точка входа:** `server.js` — Express, маршруты `/api/*`, статические файлы из `public/`.
+- **Основные модули:** `src/config.js`, `src/crypto.js`, `src/helpers.js`, `src/identity.js`, `src/merchantSession.js`, `src/projects.js`.
+- **Маршруты:** `src/routes/{auth,invoice,qr,history,refund}.js`.
+- У каждого проекта свой счёт Kaspi Pay, идентичность устройства и зашифрованная банковская сессия. API-ключ проекта автоматически выбирает его счёт. Для банковских запросов администратора нужен `X-Project-ID` с ID из конфигурации; CRUD `/api/projects` доступен администратору без этого заголовка и применяется без перезапуска.
+- ID проекта постоянен и не переиспользуется для другого клиента или счёта Kaspi Pay: к нему привязаны каталог идентичности и сессии, журнал и очередь вебхуков. API-ключи и вебхуки можно обновлять, сохраняя ID.
+- Все `/api/*` требуют Bearer API-ключ. При просмотре, отмене и возврате проверяется владелец платежа. Банковская история и SMS-вход доступны только администратору для выбранного проекта; локальная сессия браузера ведётся отдельно для каждого проекта.
+- В `DATA_DIR/projects/<id>/` хранятся файлы идентичности и сессии проекта. `DATA_DIR/projects.sqlite` централизованно хранит настройки, платежи и очередь вебхуков с ID владельца; `src/database.js` — общая SQLite-связь/транзакции, `src/paymentStore.js` — единственный источник журнала. JSON импортируется транзакционно один раз и далее не используется. Polling выбирает только незавершённые записи пакетами до 100; история остаётся в базе. API выполняет поиск по префиксу ID/заказа, фильтр результата и пагинацию на сервере. Старые платежи и повторы вебхуков сохраняют владельца `__admin__` и не назначаются новым проектам. На одном volume запускается один процесс.
+- Удаление проекта архивирует запись и отзывает ключ; существующие платежи и вебхуки продолжают обрабатываться, история и банковские файлы сохраняются. Авторизация API-ключей опирается на хеш; зашифрованная копия текущего ключа хранится для явного просмотра администратором через `/api/projects/:id/api-key`. Список проектов не содержит секретов. Старые hash-only ключи не перевыпускаются автоматически; архивирование очищает хеш и копию. Секреты вебхуков также зашифрованы.
+- Деньги рассчитываются в KZT с точностью до двух знаков по правилу ROUND_HALF_UP (`src/amount.js`). Kaspi определяет доступность возврата и остаток суммы.
 
-## Code Style
+## Стиль кода
 
-- **ES Modules** (`import`/`export`), semicolons, `const`, arrow functions.
-- `async/await` with try/catch, JSON `{ error }` on failure.
-- ESLint configured (`eslint.config.js`).
+- ES-модули, точки с запятой, `const`, стрелочные функции.
+- Используйте `async/await` и `try/catch`; ошибки API возвращайте в формате JSON `{ "error": "..." }`.
+- ESLint настроен в `eslint.config.js`.

@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { DEVICE, APP, UA_NATIVE, ENTRANCE_HEADERS_BASE, KASPI_ENTRANCE_URL, KASPI_MTOKEN_URL } from '../config.js';
+import { saveMerchantSession } from '../merchantSession.js';
+import { getIdentity } from '../identity.js';
+import { APP, UA_NATIVE, ENTRANCE_HEADERS_BASE, KASPI_ENTRANCE_URL, KASPI_MTOKEN_URL } from '../config.js';
 import { createEmptySession, applyOrgContext } from '../session.js';
 import {
   generateECDH,
@@ -16,13 +18,18 @@ const router = Router();
 
 // In-flight auth sessions keyed by processId (temporary, cleared after finish)
 const authSessions = new Map();
+const finishing = new Set();
 
 // ═══════════════════════════════════════════════════
 //  Step 1 — Init entrance (get processId)
 // ═══════════════════════════════════════════════════
 
 router.post('/init', async (req, res) => {
-  const session = createEmptySession();
+  for (const [id, entry] of authSessions) {
+    if (Date.now() - entry.createdAt > 10 * 60 * 1000) authSessions.delete(id);
+  }
+  const session = { ...createEmptySession(), projectId: req.kaspiProject.id, createdAt: Date.now() };
+  const { device: DEVICE } = getIdentity(session.projectId);
 
   try {
     const resp = await loggedFetch(`${KASPI_ENTRANCE_URL}/api/v1/entrance/step`, {
@@ -30,7 +37,7 @@ router.post('/init', async (req, res) => {
       headers: {
         ...ENTRANCE_HEADERS_BASE,
         Referer: `${KASPI_ENTRANCE_URL}/process/entrance/?auth=2&appBuild=${APP.build}&appVersion=${APP.version}&platformVersion=${APP.platformVer}&platformType=IOS&deviceBrand=${APP.brand}&deviceModel=${APP.model}&deviceId=${DEVICE.deviceId}&installId=${DEVICE.installId}&frontCameraAvailable=true&sf=registration&pc=KPEntrance&noPass=0`,
-        Cookie: entranceCookie(),
+        Cookie: entranceCookie(undefined, DEVICE),
       },
       body: JSON.stringify({
         data: {},
@@ -59,7 +66,7 @@ router.post('/init', async (req, res) => {
     const body = await resp.json();
     if (body.meta?.pId) {
       session.processId = body.meta.pId;
-      authSessions.set(session.processId, session);
+      authSessions.set(JSON.stringify([session.projectId, session.processId]), session);
     }
 
     res.json({ success: !!session.processId, processId: session.processId, view: body.view?.code, body });
@@ -83,8 +90,9 @@ router.post('/send-phone', async (req, res) => {
   }
   if (!processId) return res.status(400).json({ error: 'processId required (from /api/auth/init)' });
 
-  const session = authSessions.get(processId);
-  if (!session) return res.status(400).json({ error: 'Unknown processId. Call /api/auth/init first' });
+  const session = authSessions.get(JSON.stringify([req.kaspiProject.id, processId]));
+  if (!session || Date.now() - session.createdAt > 10 * 60 * 1000)
+    return res.status(400).json({ error: 'Unknown processId. Call /api/auth/init first' });
 
   session.phoneNumber = phoneNumber;
 
@@ -94,7 +102,7 @@ router.post('/send-phone', async (req, res) => {
       headers: {
         ...ENTRANCE_HEADERS_BASE,
         Referer: `${KASPI_ENTRANCE_URL}/process/universal-enter-phone-number?pId=${session.processId}&firstPage=KPUniversalEnterPhoneNumber`,
-        Cookie: entranceCookie(session.userToken),
+        Cookie: entranceCookie(session.userToken, getIdentity(session.projectId).device),
       },
       body: JSON.stringify({
         meta: { pId: session.processId, sn: 'EnterPhoneNumber' },
@@ -112,8 +120,7 @@ router.post('/send-phone', async (req, res) => {
     // Surface WHY Kaspi declined so callers can tell a phone-input rejection (fixable by the user) from a
     // system/config block that is NOT about the phone — e.g. OldVersionToUpdate (app version below Kaspi's
     // minimum). Kaspi puts the reason in the on-open alarm (version/system gates) or an error object (phone).
-    const kaspiErr =
-      body.view?.onOpenAlarm?.error || body.error || body.data?.error || null;
+    const kaspiErr = body.view?.onOpenAlarm?.error || body.error || body.data?.error || null;
     const errorCode = smsSent ? undefined : kaspiErr?.code;
     const errorMessage = smsSent
       ? undefined
@@ -142,8 +149,9 @@ router.post('/verify-otp', async (req, res) => {
   if (!otp) return res.status(400).json({ error: 'otp required' });
   if (!processId) return res.status(400).json({ error: 'processId required' });
 
-  const session = authSessions.get(processId);
-  if (!session) return res.status(400).json({ error: 'Unknown processId' });
+  const session = authSessions.get(JSON.stringify([req.kaspiProject.id, processId]));
+  if (!session || Date.now() - session.createdAt > 10 * 60 * 1000)
+    return res.status(400).json({ error: 'Unknown processId' });
 
   try {
     const resp = await loggedFetch(`${KASPI_ENTRANCE_URL}/api/v1/entrance/step`, {
@@ -151,7 +159,7 @@ router.post('/verify-otp', async (req, res) => {
       headers: {
         ...ENTRANCE_HEADERS_BASE,
         Referer: `${KASPI_ENTRANCE_URL}/process/universal-enter-phone-number?pId=${session.processId}&firstPage=KPUniversalEnterPhoneNumber`,
-        Cookie: entranceCookie(session.userToken),
+        Cookie: entranceCookie(session.userToken, getIdentity(session.projectId).device),
       },
       body: JSON.stringify({
         meta: { pId: session.processId, sn: 'ViewEnterOtp' },
@@ -167,8 +175,16 @@ router.post('/verify-otp', async (req, res) => {
 
     if (body.data?.type === 'kpDeviceRegistration' || body.view?.code === 'KPMobileCall') {
       // OTP verified — automatically call finish
-      const finishResult = await doFinish(session);
-      authSessions.delete(processId);
+      if (finishing.has(session.projectId))
+        return res.status(409).json({ error: 'Another Kaspi sign-in is finishing. Retry shortly' });
+      finishing.add(session.projectId);
+      let finishResult;
+      try {
+        finishResult = await doFinish(session);
+      } finally {
+        finishing.delete(session.projectId);
+      }
+      authSessions.delete(JSON.stringify([req.kaspiProject.id, processId]));
       res.json({
         success: true,
         processId: session.processId,
@@ -190,7 +206,8 @@ router.post('/verify-otp', async (req, res) => {
 // ═══════════════════════════════════════════════════
 
 async function doFinish(session) {
-  const ecdhX509 = generateECDH();
+  const { device: DEVICE, keyPair } = getIdentity(session.projectId);
+  const ecdhX509 = generateECDH(session.projectId);
   console.log('Generated ECDH public key for guard.x509:', ecdhX509);
 
   const signedDataObj = {
@@ -222,11 +239,11 @@ async function doFinish(session) {
     'X-SH': 'url,X-Time-Zone,X-Request-ID,X-Net-Type,X-Emulator,X-Call,X-Platform-Type,X-Locale,X-Time,X-SV',
   };
   const finishBody = JSON.stringify({
-    signed: { sign: signDataPayload(signedDataB64), data: signedDataB64 },
+    signed: { sign: signDataPayload(signedDataB64, keyPair), data: signedDataB64 },
     guard: { pinHash: DEVICE.pinHash, x509: ecdhX509 },
     processId: session.processId,
   });
-  finishHeaders['X-Sign'] = computeXSign(finishUrl, finishHeaders, finishHeaders['X-SH'], finishBody);
+  finishHeaders['X-Sign'] = computeXSign(finishUrl, finishHeaders, finishHeaders['X-SH'], finishBody, keyPair);
 
   const resp = await loggedFetch(finishUrl, {
     method: 'POST',
@@ -243,7 +260,7 @@ async function doFinish(session) {
     let rawSecret = null;
     if (body.data.x509) {
       try {
-        rawSecret = completeECDH(body.data.x509);
+        rawSecret = completeECDH(body.data.x509, session.projectId);
         vtokenSecret = encryptSecret(rawSecret);
         console.log('vtoken activated successfully');
       } catch (e) {
@@ -253,7 +270,6 @@ async function doFinish(session) {
 
     // Fetch org context
     const orgUrl = `${KASPI_MTOKEN_URL}/v08/organizations/org-context-otp`;
-    const piValue = session.profileId != null ? String(session.profileId) : '';
     const orgHeaders = {
       'Content-Type': 'application/json',
       Accept: '*/*',
@@ -298,7 +314,7 @@ async function doFinish(session) {
       },
       OrganizationId: 0,
     });
-    orgHeaders['X-Sign'] = computeXSign(orgUrl, orgHeaders, orgHeaders['X-SH'], orgPayload);
+    orgHeaders['X-Sign'] = computeXSign(orgUrl, orgHeaders, orgHeaders['X-SH'], orgPayload, keyPair);
 
     const orgResp = await loggedFetch(orgUrl, {
       method: 'POST',
@@ -312,7 +328,7 @@ async function doFinish(session) {
       applyOrgContext(session, orgBody.Data);
     }
 
-    return {
+    const result = {
       tokenSN: session.tokenSN,
       vtokenSecret,
       profileId: session.profileId,
@@ -321,22 +337,17 @@ async function doFinish(session) {
       phone: session.phoneNumber,
       organizations: orgBody.Data?.Organizations,
     };
+    saveMerchantSession(session.projectId, result);
+    return {
+      profileId: result.profileId,
+      organizationId: result.organizationId,
+      orgName: result.orgName,
+      phone: result.phone,
+      organizations: result.organizations,
+    };
   } else {
     throw new Error('Finish failed: ' + JSON.stringify(body));
   }
 }
-
-// ─── Session status (client sends tokenSN) ───
-
-router.post('/session', (req, res) => {
-  const { tokenSN } = req.body || {};
-  res.json({ authenticated: !!tokenSN, tokenSN });
-});
-
-// ─── Logout ───
-
-router.post('/logout', (req, res) => {
-  res.json({ success: true });
-});
 
 export default router;

@@ -1,32 +1,12 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
 import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
-import { decryptSecret } from '../crypto.js';
+import { requireSession, saveMerchantSession, markMerchantSessionInactive } from '../merchantSession.js';
 
 const router = Router();
 
-// Extract session from request headers
-const extractSession = (req) => ({
-  tokenSN: req.headers['x-token-sn'] || null,
-  profileId: req.headers['x-profile-id'] || null,
-  vtokenSecret: req.headers['x-vtoken-secret'] || null,
-});
-
-// ─── Check session validity ───
-
-router.get('/check', async (req, res) => {
-  const session = extractSession(req);
-
-  // 1. Check required headers
-  if (!session.tokenSN) return res.status(401).json({ active: false, error: 'Missing X-Token-SN header.' });
-  if (!session.vtokenSecret) return res.status(401).json({ active: false, error: 'Missing X-Vtoken-Secret header.' });
-
-  // 2. Try to decrypt vtokenSecret
-  try {
-    session.decryptedSecret = decryptSecret(session.vtokenSecret);
-  } catch {
-    return res.status(401).json({ active: false, error: 'Invalid or expired vtokenSecret. Re-authenticate.' });
-  }
+router.get('/check', requireSession, async (req, res) => {
+  const session = req.session;
 
   // 3. Ping Kaspi API to verify the token is still accepted
   try {
@@ -47,9 +27,13 @@ router.get('/check', async (req, res) => {
 
     // Kaspi may return HTTP 200 but with error StatusCode in body
     if (resp.ok && (!body.StatusCode || body.StatusCode === 0)) {
-      return res.json({ active: true });
+      saveMerchantSession(req.kaspiProject.id, session);
+      return res.json({ active: true, profileId: session.profileId, orgName: session.orgName, phone: session.phone });
     }
 
+    if ([401, 403].includes(resp.status) || body.StatusCode === -101001) {
+      markMerchantSessionInactive(req.kaspiProject.id, session.tokenSN);
+    }
     return res.status(resp.ok ? 401 : resp.status).json({
       active: false,
       error: body.Message || body.message || 'Session rejected by Kaspi API.',
