@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fetch from 'node-fetch';
 import { DEVICE, APP, UA_NATIVE } from './config.js';
 import { computeTokenSnMac, computeXSign } from './crypto.js';
+import { getIdentity } from './identity.js';
 
 // ─── Utilities ───
 
@@ -34,8 +35,8 @@ export const nowISO = () => {
 
 // ─── Cookie builder ───
 
-export const entranceCookie = (extraUserToken) => {
-  let c = `deviceId=${DEVICE.deviceId}; installId=${DEVICE.installId}; is_mobile_app=true; locale=${APP.locale}; ma_bld=${APP.build}; ma_platform_type=${APP.platform}; ma_platform_ver=${APP.platformVer}; ma_ver=${APP.version}; pk=${DEVICE.pk}; pkTag=${DEVICE.pkTag}; xs=R:0|E:0|RH:0|N:0`;
+export const entranceCookie = (extraUserToken, device = DEVICE) => {
+  let c = `deviceId=${device.deviceId}; installId=${device.installId}; is_mobile_app=true; locale=${APP.locale}; ma_bld=${APP.build}; ma_platform_type=${APP.platform}; ma_platform_ver=${APP.platformVer}; ma_ver=${APP.version}; pk=${device.pk}; pkTag=${device.pkTag}; xs=R:0|E:0|RH:0|N:0`;
   if (extraUserToken) c += `; user_token=${extraUserToken}`;
   return c;
 };
@@ -55,44 +56,31 @@ export const extractUserToken = (resp) => {
 
 export const loggedFetch = async (url, options = {}) => {
   const method = (options.method || 'GET').toUpperCase();
-  console.log(`\n>>> ${method} ${url}`);
-  if (options.headers) console.log('>>> Headers:', JSON.stringify(options.headers, null, 2));
-  if (options.body) {
-    try {
-      console.log('>>> Body:', JSON.parse(options.body));
-    } catch {
-      console.log('>>> Body:', options.body);
-    }
-  }
-
-  const resp = await fetch(url, options);
-  const cloned = resp.clone();
-  let body;
+  console.log(`\n>>> ${method}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    body = await cloned.json();
-  } catch {
-    try {
-      body = await cloned.text();
-    } catch {
-      body = '[unreadable]';
-    }
+    const resp = await fetch(url, { ...options, signal: controller.signal, timeout: 15000 });
+    console.log(`<<< ${resp.status} ${resp.statusText}`);
+    return resp;
+  } finally {
+    clearTimeout(timer);
   }
-  console.log(`<<< ${resp.status} ${resp.statusText}`);
-  console.log('<<< Response:', typeof body === 'object' ? JSON.stringify(body, null, 2) : body);
-  return resp;
 };
 
 // ─── Signed QR-pay headers (session passed as parameter) ───
 
 export const signedQrPayHeaders = (url, session, body) => {
+  const identity = session.projectId ? getIdentity(session.projectId) : null;
+  const device = identity?.device || DEVICE;
   const xsh =
     'url,X-Install-ID,X-PI,X-App-Bld,X-Platform-Ver,X-Locale,X-App-Ver,X-Device-ID,X-SV,X-Time,X-Platform-Type,X-Call,X-Kb-TokenSnMac,X-Kb-TokenSn';
   const headers = {
     'X-Kb-TokenSn': session.tokenSN,
     'X-Kb-TokenSnMac': computeTokenSnMac(session.tokenSN, session.decryptedSecret),
     'X-PI': session.profileId != null ? String(session.profileId) : '',
-    'X-Install-ID': DEVICE.installId,
-    'X-Device-ID': DEVICE.deviceId,
+    'X-Install-ID': device.installId,
+    'X-Device-ID': device.deviceId,
     'X-App-Ver': APP.version,
     'X-App-Bld': APP.build,
     'X-Platform-Type': APP.platform,
@@ -108,6 +96,6 @@ export const signedQrPayHeaders = (url, session, body) => {
     'Accept-Language': 'ru',
     'Accept-Encoding': 'gzip, deflate, br',
   };
-  headers['X-Sign'] = computeXSign(url, headers, xsh, body);
+  headers['X-Sign'] = computeXSign(url, headers, xsh, body, identity?.keyPair);
   return headers;
 };

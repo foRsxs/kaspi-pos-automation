@@ -275,25 +275,259 @@
         color: #888;
       }
     </style>
+    <link rel="stylesheet" href="admin.css" />
+    <link rel="stylesheet" href="payments.css" />
   </head>
   <body>
     <div class="container">
-      <h1>🏦 Kaspi Pay</h1>
+      <header class="page-header">
+        <div class="brand-mark" aria-hidden="true">K</div>
+        <div>
+          <h1>Kaspi Pay</h1>
+          <p>Управление проектами и банковскими подключениями</p>
+        </div>
+      </header>
 
-      <!-- ═══ AUTH SCREEN ═══ -->
-      <div id="authScreen">
-        <div class="card">
+      <section id="adminLogin" class="admin-login card" aria-labelledby="adminLoginTitle">
+        <div class="section-eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</div>
+        <h2 id="adminLoginTitle">Вход администратора</h2>
+        <p class="muted">Введите ключ администратора, чтобы управлять проектами, доступами и вебхуками.</p>
+        <label for="adminApiKey">Ключ администратора сервера</label>
+        <input type="password" id="adminApiKey" autocomplete="current-password" placeholder="ADMIN_API_KEY" />
+        <div class="login-actions">
+          <button class="btn btn-primary" id="btnLoadProjects" onclick="loadProjects()">Войти в панель</button>
+        </div>
+        <div id="adminLoginMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+      </section>
+
+      <main id="projectDashboard" class="hidden" aria-labelledby="dashboardTitle">
+        <section class="dashboard-heading">
+          <div>
+            <div class="section-eyebrow">АДМИНИСТРИРОВАНИЕ</div>
+            <h2 id="dashboardTitle">Проекты</h2>
+            <p class="muted">Управляйте ключами, подключением Kaspi Pay и доставкой уведомлений.</p>
+          </div>
+          <div class="dashboard-actions">
+            <button class="btn btn-secondary" onclick="openPayments()">Платежи</button>
+            <button class="btn btn-secondary" id="btnRefreshProjects" onclick="loadProjects()">Обновить</button>
+            <button class="btn btn-primary" onclick="openProjectDialog()">Создать проект</button>
+            <button class="btn btn-quiet" onclick="adminLogout()">Выйти</button>
+          </div>
+        </section>
+
+        <div id="adminNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <section class="project-summary" aria-label="Сводка проектов">
+          <div class="summary-value" id="projectCount">0</div>
+          <div>
+            <strong>проектов</strong
+            ><span class="muted" id="projectSummary">Создайте первый проект для начала работы.</span>
+          </div>
+        </section>
+        <div id="projectsGrid" class="projects-grid" aria-live="polite"></div>
+        <section class="archived-section">
+          <label class="archive-toggle"
+            ><input type="checkbox" id="showArchived" onchange="toggleArchivedProjects()" />
+            <span>Показать архивные проекты</span>
+          </label>
+          <div id="archivedProjects" class="projects-grid hidden" aria-live="polite"></div>
+        </section>
+      </main>
+
+      <section id="bankWorkspace" class="bank-workspace hidden" aria-label="Работа со счётом Kaspi Pay">
+        <div class="bank-project-card card">
+          <div class="bank-project-controls">
+            <div>
+              <div class="section-eyebrow">БАНКОВСКИЙ СЧЁТ</div>
+              <label for="projectSelect">Текущий проект</label>
+              <select id="projectSelect" onchange="switchProject()">
+                <option value="">Выберите проект</option>
+              </select>
+              <div id="selectedProjectStatus" class="selected-project-status hidden" role="status"></div>
+            </div>
+            <button class="btn btn-secondary" onclick="goToDashboard()">К проектам</button>
+          </div>
+        </div>
+
+        <!-- ═══ MAIN SCREEN ═══ -->
+        <div id="mainScreen" class="hidden">
+          <!-- User info -->
+          <div class="card" id="userCard">
+            <div class="user-info">
+              <div class="user-avatar" id="userAvatar">K</div>
+              <div class="user-details">
+                <div class="user-name" id="userName">—</div>
+                <div class="user-org" id="userOrg">—</div>
+              </div>
+              <button
+                class="btn btn-secondary"
+                style="width: auto; margin: 0; padding: 8px 16px; font-size: 13px"
+                onclick="logout()"
+              >
+                Выйти
+              </button>
+            </div>
+          </div>
+
+          <!-- Tabs -->
+          <div class="tabs">
+            <button class="tab active" id="tabInvoice" onclick="switchTab('invoice')">Счёт</button>
+            <button class="tab" id="tabQr" onclick="switchTab('qr')">Создать QR</button>
+            <button class="tab" id="tabHistory" onclick="switchTab('history')">История</button>
+            <button class="tab" id="tabSales" onclick="switchTab('sales')">Продажи</button>
+          </div>
+
+          <!-- Invoice Tab -->
+          <div id="invoiceTab">
+            <div class="card">
+              <h2>Выставить счёт</h2>
+              <label>Телефон клиента</label>
+              <div class="phone-prefix">
+                <span>+7</span>
+                <input type="tel" id="clientPhone" placeholder="XXX XXX XX XX" inputmode="numeric" />
+              </div>
+              <div
+                id="clientInfo"
+                class="hidden"
+                style="
+                  margin-top: 8px;
+                  padding: 8px 12px;
+                  background: #e8f5e9;
+                  border-radius: 8px;
+                  font-size: 14px;
+                  color: #2e7d32;
+                "
+              ></div>
+              <label>Сумма (₸)</label>
+              <input type="number" id="invoiceAmount" placeholder="0" min="1" inputmode="numeric" />
+              <label>Комментарий</label>
+              <input type="text" id="invoiceComment" placeholder="Оплата" />
+              <button class="btn btn-primary" id="btnCreate" onclick="createInvoice()">Выставить счёт</button>
+            </div>
+
+            <!-- Invoice result -->
+            <div id="invoiceResult" class="hidden">
+              <div class="card">
+                <h2>Счёт <span id="invoiceOpId"></span></h2>
+                <div id="invoiceDetails"></div>
+                <button class="btn btn-danger" id="btnCancel" onclick="cancelInvoice()" style="margin-top: 12px">
+                  Отменить счёт
+                </button>
+                <button class="btn btn-secondary" onclick="refreshInvoice()">Обновить статус</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- QR Tab -->
+          <div id="qrTab" class="hidden">
+            <div class="card">
+              <h2>Создать QR для оплаты</h2>
+              <label>Сумма (₸)</label>
+              <input type="number" id="qrAmount" placeholder="0" min="1" inputmode="numeric" />
+              <button class="btn btn-primary" id="btnCreateQr" onclick="createQr()">Создать QR</button>
+            </div>
+
+            <!-- QR result -->
+            <div id="qrResult" class="hidden">
+              <div class="card">
+                <h2>QR-код для оплаты</h2>
+                <div id="qrStatus" class="status-bar status-info" style="margin-bottom: 12px">
+                  Ожидание сканирования...
+                </div>
+                <div id="qrTimer" style="text-align: center; font-size: 14px; color: #888; margin-bottom: 12px"></div>
+                <div id="qrCodeContainer" style="text-align: center; margin: 16px 0"></div>
+                <div id="qrDetails"></div>
+                <button class="btn btn-secondary" onclick="resetQr()">Новый QR</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- History Tab -->
+          <div id="historyTab" class="hidden">
+            <div class="card">
+              <h2>История операций</h2>
+              <button class="btn btn-secondary" onclick="loadHistory()" style="margin-bottom: 12px">Обновить</button>
+              <div id="historyList"><p style="color: #888; text-align: center">Нажмите «Обновить»</p></div>
+            </div>
+
+            <div id="historyDetail" class="hidden">
+              <div class="card">
+                <h2>Детали операции</h2>
+                <div id="historyDetailContent"></div>
+                <button class="btn btn-danger hidden" id="btnCancelFromHistory" onclick="cancelFromHistory()">
+                  Отменить
+                </button>
+                <button
+                  class="btn btn-secondary"
+                  onclick="document.getElementById('historyDetail').classList.add('hidden')"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sales Tab -->
+          <div id="salesTab" class="hidden">
+            <div class="card">
+              <h2>Продажи и возвраты</h2>
+              <div id="salesStats" style="margin-bottom: 12px"></div>
+              <button class="btn btn-secondary" onclick="loadSales()" style="margin-bottom: 12px">Обновить</button>
+              <div id="salesList"><p style="color: #888; text-align: center">Нажмите «Обновить»</p></div>
+            </div>
+
+            <div id="salesDetail" class="hidden">
+              <div class="card">
+                <h2>Детали операции</h2>
+                <div id="salesDetailContent"></div>
+                <div id="refundSection" class="hidden" style="margin-top: 12px">
+                  <label>Сумма возврата (₸)</label>
+                  <input type="number" id="refundAmount" placeholder="0" min="1" inputmode="numeric" />
+                  <button class="btn btn-danger" id="btnRefund" onclick="createRefund()" style="margin-top: 8px">
+                    Сделать возврат
+                  </button>
+                </div>
+                <div id="refundMsg" class="hidden" style="margin-top: 8px"></div>
+                <button
+                  class="btn btn-secondary"
+                  onclick="document.getElementById('salesDetail').classList.add('hidden')"
+                  style="margin-top: 8px"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <dialog id="connectDialog" class="app-dialog connect-dialog" aria-labelledby="connectDialogTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ВХОД ПО SMS</div>
+            <h2 id="connectDialogTitle">Подключение счёта Kaspi Pay</h2>
+            <p id="authProjectContext" class="muted connect-project-context"></p>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть" onclick="closeConnectDialog()">×</button>
+        </div>
+
+        <div id="authScreen" class="connect-auth-screen">
           <div class="step-indicator">
             <div class="step-dot" id="dot1"></div>
             <div class="step-dot" id="dot2"></div>
             <div class="step-dot" id="dot3"></div>
           </div>
+          <p class="auth-intro">
+            У каждого проекта свой счёт Kaspi Pay и отдельный вход по SMS. Выход из интерфейса не останавливает приём
+            платежей проектов.
+          </p>
+          <div id="authMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
 
-          <!-- Step 1: Phone -->
           <div id="authStep1">
-            <h2>Вход по номеру телефона</h2>
-            <p style="font-size: 14px; color: #666; margin-bottom: 12px">Войдите с аккаунта кассира Kaspi Pay</p>
-            <label>Номер телефона</label>
+            <h3>Введите номер телефона</h3>
+            <p class="auth-step-copy">Войдите с аккаунта кассира Kaspi Pay</p>
+            <label for="phoneInput">Номер телефона</label>
             <div class="phone-prefix">
               <span>+7</span>
               <input type="tel" id="phoneInput" placeholder="XXX XXX XX XX" inputmode="numeric" />
@@ -301,183 +535,229 @@
             <button class="btn btn-primary" id="btnSendPhone" onclick="sendPhone()">Получить SMS код</button>
           </div>
 
-          <!-- Step 2: OTP -->
           <div id="authStep2" class="hidden">
             <h2>Введите код из SMS</h2>
-            <p id="otpDesc" style="font-size: 14px; color: #666; margin-bottom: 12px"></p>
-            <label>Код подтверждения</label>
+            <p id="otpDesc" class="auth-step-copy"></p>
+            <label for="otpInput">Код подтверждения</label>
             <input type="tel" id="otpInput" class="otp-input" placeholder="• • • •" maxlength="6" inputmode="numeric" />
             <button class="btn btn-primary" id="btnVerifyOtp" onclick="verifyOtp()">Подтвердить</button>
             <button class="btn btn-secondary" onclick="resetAuth()">Назад</button>
           </div>
 
-          <!-- Step 3: Finishing -->
           <div id="authStep3" class="hidden">
             <h2>Завершение входа...</h2>
-            <p style="text-align: center; color: #888; margin: 20px 0">
-              Подключение к Kaspi Pay<span
-                class="loader"
-                style="border-color: #e31e24; border-top-color: transparent"
-              ></span>
-            </p>
+            <p class="auth-finishing-copy">Подключение к Kaspi Pay<span class="loader"></span></p>
           </div>
+        </div>
 
-          <div id="authMsg" class="hidden" style="margin-top: 12px"></div>
+        <div id="connectSuccess" class="connect-success hidden" role="status" aria-live="polite">
+          <div class="connect-success-icon" aria-hidden="true">✓</div>
+          <h3>Счёт Kaspi Pay подключён</h3>
+          <p id="connectSuccessMessage" class="muted"></p>
+          <div class="dialog-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeConnectDialog()">Готово</button>
+            <button type="button" class="btn btn-primary" onclick="openConnectedAccount()">Открыть счёт</button>
+          </div>
+        </div>
+
+        <div class="connect-dialog-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeConnectDialog()">Отмена</button>
         </div>
       </div>
+    </dialog>
 
-      <!-- ═══ MAIN SCREEN ═══ -->
-      <div id="mainScreen" class="hidden">
-        <!-- User info -->
-        <div class="card" id="userCard">
-          <div class="user-info">
-            <div class="user-avatar" id="userAvatar">K</div>
-            <div class="user-details">
-              <div class="user-name" id="userName">—</div>
-              <div class="user-org" id="userOrg">—</div>
+    <dialog id="projectDialog" class="app-dialog" aria-labelledby="projectDialogTitle">
+      <form id="projectForm" class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">НАСТРОЙКИ</div>
+            <h2 id="projectDialogTitle">Новый проект</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть" onclick="closeProjectDialog()">×</button>
+        </div>
+        <div id="projectDialogMsg" class="status-bar hidden" role="alert"></div>
+        <label for="projectName">Название проекта</label>
+        <input type="text" id="projectName" maxlength="120" required placeholder="Например, Магазин Алматы" />
+        <div id="projectIdField">
+          <label for="projectId"
+            >ID проекта <span class="field-hint">необязательно, постоянный и повторно не используется</span></label
+          >
+          <input type="text" id="projectId" maxlength="64" placeholder="shop-almaty" autocomplete="off" />
+        </div>
+        <div id="projectStatusField" class="hidden">
+          <label for="projectStatus">Статус проекта</label>
+          <select id="projectStatus">
+            <option value="active">Активен</option>
+            <option value="disabled">Отключён</option>
+          </select>
+        </div>
+        <section
+          id="projectAccountSection"
+          class="project-settings-section hidden"
+          aria-labelledby="projectAccountTitle"
+        >
+          <div class="webhook-heading">
+            <div>
+              <h3 id="projectAccountTitle">Счёт Kaspi Pay</h3>
+              <p class="muted">У проекта отдельный банковский вход. Подключение и переподключение доступны здесь.</p>
             </div>
-            <button
-              class="btn btn-secondary"
-              style="width: auto; margin: 0; padding: 8px 16px; font-size: 13px"
-              onclick="logout()"
-            >
-              Выйти
+          </div>
+          <div id="projectConnectionStatus" class="account-connection-status" role="status"></div>
+          <div class="project-account-actions">
+            <button type="button" class="btn btn-primary" id="btnOpenAccountSettings">Открыть счёт Kaspi Pay</button>
+            <button type="button" class="btn btn-secondary hidden" id="btnReconnectAccount">Переподключить</button>
+          </div>
+          <div id="projectAccountMessage" class="status-bar hidden" role="status" aria-live="polite"></div>
+        </section>
+        <section id="projectKeySection" class="project-settings-section hidden" aria-labelledby="projectKeyTitle">
+          <div class="webhook-heading">
+            <div>
+              <h3 id="projectKeyTitle">API-ключ проекта</h3>
+              <p id="projectKeyHint" class="muted"></p>
+            </div>
+          </div>
+          <div class="project-account-actions">
+            <button type="button" class="btn btn-secondary" id="btnRevealProjectKey">Показать API-ключ</button>
+            <button type="button" class="btn btn-secondary" id="btnRotateProjectKeySettings">Перевыпустить ключ</button>
+          </div>
+          <div id="projectKeyMessage" class="status-bar hidden" role="status" aria-live="polite"></div>
+        </section>
+        <section id="webhookEditor" class="webhook-editor hidden" aria-labelledby="webhookTitle">
+          <div class="webhook-heading">
+            <div>
+              <h3 id="webhookTitle">Вебхуки</h3>
+              <p class="muted">События оплаты будут отправляться на указанные адреса.</p>
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="addWebhookRow()">Добавить вебхук</button>
+          </div>
+          <div id="webhookRows"></div>
+          <p class="field-hint">
+            Секрет нового вебхука будет показан один раз. Секрет настроенного вебхука оставьте пустым, чтобы сохранить
+            его.
+          </p>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeProjectDialog()">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="btnSaveProject">Сохранить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      id="secretDialog"
+      class="app-dialog secret-dialog"
+      aria-labelledby="secretDialogTitle"
+      onclose="clearSecretDialog()"
+    >
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow" id="secretDialogEyebrow">ДОСТУПЫ ПРОЕКТА</div>
+            <h2 id="secretDialogTitle">Секреты проекта</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть" onclick="closeSecretDialog()">×</button>
+        </div>
+        <p id="secretWarning" class="secret-warning"></p>
+        <div id="secretList" class="secret-list"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeSecretDialog()">Закрыть и очистить</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="confirmDialog" class="app-dialog confirm-dialog" aria-labelledby="confirmTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ПОДТВЕРЖДЕНИЕ</div>
+            <h2 id="confirmTitle">Архивировать проект?</h2>
+          </div>
+        </div>
+        <p id="confirmDescription" class="muted"></p>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeConfirmDialog()">Отмена</button>
+          <button type="button" class="btn btn-danger" id="btnConfirmAction">Архивировать</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="paymentsDialog" class="app-dialog payments-dialog" aria-labelledby="paymentsDialogTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ЖУРНАЛ СЕРВЕРА</div>
+            <h2 id="paymentsDialogTitle">Платежи</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть платежи" onclick="closePayments()">×</button>
+        </div>
+        <p class="muted payments-intro">
+          Платежи, созданные через этот сервер. Статусы поступают от фонового отслеживания; список обновляется каждые 10
+          секунд.
+        </p>
+        <div class="payments-filters">
+          <label>Проект<select id="paymentsProject" onchange="changePaymentsProject()"></select></label>
+          <label
+            >Статус<select id="paymentsStatus" onchange="filterPayments()">
+              <option value="all">Все статусы</option>
+              <option value="pending">Отслеживаются</option>
+              <option value="paid">Оплачены</option>
+              <option value="failed">Не оплачены</option>
+              <option value="expired">Срок истёк</option>
+              <option value="review">Требуют сверки</option>
+            </select></label
+          >
+          <label
+            >Поиск<input
+              id="paymentsSearch"
+              type="search"
+              maxlength="120"
+              placeholder="Начало ID платежа или заказа"
+              oninput="searchPayments()"
+          /></label>
+          <button type="button" class="btn btn-secondary" id="btnRefreshPayments" onclick="loadPaymentRows()">
+            Обновить
+          </button>
+        </div>
+        <div id="paymentsNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <p id="paymentsSummary" class="muted payments-summary" role="status" aria-live="polite"></p>
+        <div class="payments-table-wrap">
+          <table class="payments-table">
+            <caption class="sr-only">
+              Платежи выбранного проекта
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Создан</th>
+                <th scope="col">Платёж / заказ</th>
+                <th scope="col">Способ</th>
+                <th scope="col">Сумма</th>
+                <th scope="col">Статус</th>
+              </tr>
+            </thead>
+            <tbody id="paymentsRows"></tbody>
+          </table>
+        </div>
+        <div id="paymentsEmpty" class="empty-state hidden"></div>
+        <div class="payments-pagination">
+          <span id="paymentsUpdated" class="muted"></span>
+          <div>
+            <button type="button" class="btn btn-secondary" id="btnPaymentsPrev" onclick="pagePayments(-1)">
+              Назад</button
+            ><span id="paymentsPage"></span
+            ><button type="button" class="btn btn-secondary" id="btnPaymentsNext" onclick="pagePayments(1)">
+              Далее
             </button>
           </div>
         </div>
-
-        <!-- Tabs -->
-        <div class="tabs">
-          <button class="tab active" id="tabInvoice" onclick="switchTab('invoice')">Счёт</button>
-          <button class="tab" id="tabQr" onclick="switchTab('qr')">Создать QR</button>
-          <button class="tab" id="tabHistory" onclick="switchTab('history')">История</button>
-          <button class="tab" id="tabSales" onclick="switchTab('sales')">Продажи</button>
-        </div>
-
-        <!-- Invoice Tab -->
-        <div id="invoiceTab">
-          <div class="card">
-            <h2>Выставить счёт</h2>
-            <label>Телефон клиента</label>
-            <div class="phone-prefix">
-              <span>+7</span>
-              <input type="tel" id="clientPhone" placeholder="XXX XXX XX XX" inputmode="numeric" />
-            </div>
-            <div
-              id="clientInfo"
-              class="hidden"
-              style="
-                margin-top: 8px;
-                padding: 8px 12px;
-                background: #e8f5e9;
-                border-radius: 8px;
-                font-size: 14px;
-                color: #2e7d32;
-              "
-            ></div>
-            <label>Сумма (₸)</label>
-            <input type="number" id="invoiceAmount" placeholder="0" min="1" inputmode="numeric" />
-            <label>Комментарий</label>
-            <input type="text" id="invoiceComment" placeholder="Оплата" />
-            <button class="btn btn-primary" id="btnCreate" onclick="createInvoice()">Выставить счёт</button>
-          </div>
-
-          <!-- Invoice result -->
-          <div id="invoiceResult" class="hidden">
-            <div class="card">
-              <h2>Счёт <span id="invoiceOpId"></span></h2>
-              <div id="invoiceDetails"></div>
-              <button class="btn btn-danger" id="btnCancel" onclick="cancelInvoice()" style="margin-top: 12px">
-                Отменить счёт
-              </button>
-              <button class="btn btn-secondary" onclick="refreshInvoice()">Обновить статус</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- QR Tab -->
-        <div id="qrTab" class="hidden">
-          <div class="card">
-            <h2>Создать QR для оплаты</h2>
-            <label>Сумма (₸)</label>
-            <input type="number" id="qrAmount" placeholder="0" min="1" inputmode="numeric" />
-            <button class="btn btn-primary" id="btnCreateQr" onclick="createQr()">Создать QR</button>
-          </div>
-
-          <!-- QR result -->
-          <div id="qrResult" class="hidden">
-            <div class="card">
-              <h2>QR-код для оплаты</h2>
-              <div id="qrStatus" class="status-bar status-info" style="margin-bottom: 12px">
-                Ожидание сканирования...
-              </div>
-              <div id="qrTimer" style="text-align: center; font-size: 14px; color: #888; margin-bottom: 12px"></div>
-              <div id="qrCodeContainer" style="text-align: center; margin: 16px 0"></div>
-              <div id="qrDetails"></div>
-              <button class="btn btn-secondary" onclick="resetQr()">Новый QR</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- History Tab -->
-        <div id="historyTab" class="hidden">
-          <div class="card">
-            <h2>История операций</h2>
-            <button class="btn btn-secondary" onclick="loadHistory()" style="margin-bottom: 12px">Обновить</button>
-            <div id="historyList"><p style="color: #888; text-align: center">Нажмите «Обновить»</p></div>
-          </div>
-
-          <div id="historyDetail" class="hidden">
-            <div class="card">
-              <h2>Детали операции</h2>
-              <div id="historyDetailContent"></div>
-              <button class="btn btn-danger hidden" id="btnCancelFromHistory" onclick="cancelFromHistory()">
-                Отменить
-              </button>
-              <button
-                class="btn btn-secondary"
-                onclick="document.getElementById('historyDetail').classList.add('hidden')"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sales Tab -->
-        <div id="salesTab" class="hidden">
-          <div class="card">
-            <h2>Продажи и возвраты</h2>
-            <div id="salesStats" style="margin-bottom: 12px"></div>
-            <button class="btn btn-secondary" onclick="loadSales()" style="margin-bottom: 12px">Обновить</button>
-            <div id="salesList"><p style="color: #888; text-align: center">Нажмите «Обновить»</p></div>
-          </div>
-
-          <div id="salesDetail" class="hidden">
-            <div class="card">
-              <h2>Детали операции</h2>
-              <div id="salesDetailContent"></div>
-              <div id="refundSection" class="hidden" style="margin-top: 12px">
-                <label>Сумма возврата (₸)</label>
-                <input type="number" id="refundAmount" placeholder="0" min="1" inputmode="numeric" />
-                <button class="btn btn-danger" id="btnRefund" onclick="createRefund()" style="margin-top: 8px">
-                  Сделать возврат
-                </button>
-              </div>
-              <div id="refundMsg" class="hidden" style="margin-top: 8px"></div>
-              <button
-                class="btn btn-secondary"
-                onclick="document.getElementById('salesDetail').classList.add('hidden')"
-                style="margin-top: 8px"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
+        <p class="muted payments-footnote">
+          «Требует сверки» означает, что сервер не смог подтвердить результат. Сверьте такой платёж с банковской
+          историей. Журнал не включает оплаты, созданные вне этого сервера.
+        </p>
       </div>
-    </div>
+    </dialog>
 
     <script src="app.js"></script>
+    <script src="admin.js"></script>
+    <script src="payments.js"></script>
   </body>
 </html>

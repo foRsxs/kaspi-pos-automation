@@ -1,74 +1,11 @@
 import 'dotenv/config';
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = path.resolve(__dirname, '..');
+import { getIdentity } from './identity.js';
+import { ROOT_DIR } from './paths.js';
 
 export const PORT = process.env.PORT || 3000;
 
-// ─── ECDSA P-256 keypair (persisted to keypair.json) ───
-
-const KEYPAIR_FILE = path.join(ROOT_DIR, 'keypair.json');
-
-let ecKeyPair;
-if (fs.existsSync(KEYPAIR_FILE)) {
-  const saved = JSON.parse(fs.readFileSync(KEYPAIR_FILE, 'utf8'));
-  ecKeyPair = {
-    privateKey: crypto.createPrivateKey({ key: Buffer.from(saved.privateKey, 'base64'), format: 'der', type: 'pkcs8' }),
-    publicKey: crypto.createPublicKey({ key: Buffer.from(saved.publicKey, 'base64'), format: 'der', type: 'spki' }),
-  };
-  console.log('Loaded ECDSA keypair from keypair.json');
-} else {
-  ecKeyPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-  const saved = {
-    privateKey: ecKeyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
-    publicKey: ecKeyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
-  };
-  fs.writeFileSync(KEYPAIR_FILE, JSON.stringify(saved, null, 2));
-  console.log('Generated new ECDSA keypair → saved to keypair.json');
-}
-
-export { ecKeyPair };
-
-// Uncompressed EC public key point (base64)
-const pubKeyDer = ecKeyPair.publicKey.export({ type: 'spki', format: 'der' });
-const x509B64 = pubKeyDer.toString('base64');
-const uncompressedPoint = pubKeyDer.slice(pubKeyDer.length - 65);
-const pkB64 = uncompressedPoint.toString('base64');
-const pkTagHash = crypto.createHash('md5').update(pkB64).digest('hex');
-
-// ─── Device identity (persisted to device.json) ───
-
-const DEVICE_FILE = path.join(ROOT_DIR, 'device.json');
-
-let deviceId, installId, pinHash;
-if (fs.existsSync(DEVICE_FILE)) {
-  const saved = JSON.parse(fs.readFileSync(DEVICE_FILE, 'utf8'));
-  ({ deviceId, installId, pinHash } = saved);
-  console.log('Loaded device identity from device.json');
-} else {
-  deviceId = crypto.randomUUID().toUpperCase();
-  installId = crypto.randomUUID().toUpperCase();
-  pinHash = crypto.createHash('md5').update(crypto.randomBytes(16)).digest('hex');
-  fs.writeFileSync(DEVICE_FILE, JSON.stringify({ deviceId, installId, pinHash }, null, 2));
-  console.log('Generated new device identity → saved to device.json');
-}
-
-export const DEVICE = {
-  deviceId,
-  installId,
-  pk: pkB64,
-  pkTag: pkTagHash,
-  pinHash,
-  x509: x509B64,
-};
-
-console.log('  pk:', DEVICE.pk);
-console.log('  x509:', DEVICE.x509);
-console.log('  pkTag:', DEVICE.pkTag);
+// Legacy identity is only used by old tracked operations and utility callers.
+export const { device: DEVICE, keyPair: ecKeyPair } = getIdentity('__admin__');
 
 // ─── Kaspi Base URLs ───
 

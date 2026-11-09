@@ -1,43 +1,25 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
 import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
-import { decryptSecret } from '../crypto.js';
-import { trackPayment } from '../polling.js';
+import { requireSession } from '../merchantSession.js';
+import { trackPayment, requirePayment } from '../polling.js';
+
+import { requireAmount } from '../amount.js';
+import { requireActiveProject } from '../projects.js';
 
 const router = Router();
 
-// Extract session from request headers
-const extractSession = (req) => ({
-  tokenSN: req.headers['x-token-sn'] || null,
-  profileId: req.headers['x-profile-id'] || null,
-  vtokenSecret: req.headers['x-vtoken-secret'] || null,
-});
-
-const requireAuth = (req, res, next) => {
-  const session = extractSession(req);
-  if (!session.tokenSN) return res.status(401).json({ error: 'Missing X-Token-SN header.' });
-  if (!session.vtokenSecret) return res.status(401).json({ error: 'Missing X-Vtoken-Secret header.' });
-  try {
-    session.decryptedSecret = decryptSecret(session.vtokenSecret);
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired vtokenSecret. Re-authenticate.' });
-  }
-  req.session = session;
-  next();
-};
-
-router.use(requireAuth);
+router.use(requireSession);
 
 // ─── Create QR token ───
 
-router.post('/create', async (req, res) => {
+router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res) => {
   const { amount, latitude, longitude } = req.body;
-  if (!amount) return res.status(400).json({ error: 'amount required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/qr-token/create`;
     const payload = JSON.stringify({
-      PaymentAmount: Number(amount),
+      PaymentAmount: amount,
       DeviceInterface: 'Pos',
       Latitude: latitude || 43.204643483375889,
       Longitude: longitude || 76.891962364115912,
@@ -52,19 +34,21 @@ router.post('/create', async (req, res) => {
     const d = kaspiResponse.Data;
     if (d && d.QrOperationId) {
       const opts = d.QrPaymentBehaviorOptions || {};
-      trackPayment(
+      const persisted = trackPayment(
         d.QrOperationId,
         'qr',
         {
+          projectId: req.kaspiProject.id,
           tokenSN: req.session.tokenSN,
-          vtokenSecret: req.headers['x-vtoken-secret'],
+          vtokenSecret: req.session.vtokenSecret,
           profileId: req.session.profileId,
         },
         {
           qrToken: d.QrToken,
           expireDate: d.ExpireDate,
           receiptUrl: d.ReceiptUrl,
-          amount: d.Amount,
+          amount: d.Amount ?? req.body.amount,
+          orderId: req.body.orderId,
           pollingIntervals: {
             scanWaitTimeout: Number(opts.qrCodeScanWaitTimeout) || 180,
             scanPollingInterval: Number(opts.qrCodeScanEventPollingInterval) || 3,
@@ -72,7 +56,10 @@ router.post('/create', async (req, res) => {
             confirmationTimeout: Number(opts.paymentConfirmationTimeout) || 65,
           },
         },
+        req.kaspiProject.id,
       );
+      kaspiResponse.tracking = { persisted };
+      if (!persisted) res.status(202);
     }
     if (d && d.QrToken) {
       d.QrOriginalToken = d.QrToken;
@@ -86,9 +73,8 @@ router.post('/create', async (req, res) => {
 
 // ─── QR payment status ───
 
-router.get('/status', async (req, res) => {
+router.get('/status', requirePayment('qr', 'qrOperationId'), async (req, res) => {
   const { qrOperationId } = req.query;
-  if (!qrOperationId) return res.status(400).json({ error: 'qrOperationId required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v02/kaspi-qr/status?qrOperationId=${qrOperationId}`;

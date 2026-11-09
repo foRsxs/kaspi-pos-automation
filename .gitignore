@@ -18,3 +18,12 @@ tracked-payments.json
 webhook-retries.json
 logs/
 last-session.json
+projects.json
+merchant-session.json
+payments-state.json
+data/
+projects/
+*.json.tmp
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

@@ -1,0 +1,5 @@
+# First upgrade from the JSON configuration only. Later starts use compose.yaml.
+services:
+  kaspi:
+    volumes:
+      - ./projects.json:/app/projects.json:ro

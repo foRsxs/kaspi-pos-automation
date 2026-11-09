@@ -1,79 +1,84 @@
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
+import crypto from 'node:crypto';
 import fetch from 'node-fetch';
-import { fileURLToPath } from 'url';
 import { KASPI_QRPAY_URL } from './config.js';
 import { signedQrPayHeaders } from './helpers.js';
 import { decryptSecret } from './crypto.js';
 import { getWebhooksByEvent } from './webhookStore.js';
+import { projectWebhooks } from './projects.js';
 import { logger } from './logger.js';
+import { markMerchantSessionInactive } from './merchantSession.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TRACKED_FILE = path.join(__dirname, '..', 'tracked-payments.json');
+import {
+  storePayment,
+  ownsStoredPayment,
+  pendingPayments,
+  pendingEntries,
+  updatePendingPayment,
+  finishStoredPayment,
+  dueDeliveries,
+  removeDelivery,
+  retryDelivery,
+  paymentSession,
+} from './paymentStore.js';
+export { listPayments } from './paymentStore.js';
 
-// ─── Tracked payments ───
-
-const trackedPayments = new Map();
-
-// ─── Persistence ───
-
-const saveTracked = () => {
-  try {
-    const data = Object.fromEntries(trackedPayments);
-    fs.writeFileSync(TRACKED_FILE, JSON.stringify(data, null, 2));
-  } catch (err) {
-    logger.error('POLLING', 'Failed to save tracked payments', err.message);
+const keyFor = (projectId, type, paymentId) => JSON.stringify([projectId, type, String(paymentId)]);
+const hooksFor = (projectId, event) =>
+  projectId === '__admin__' ? getWebhooksByEvent(event) : projectWebhooks(projectId, event);
+// Only initial writes that failed are retained temporarily, so an existing bank
+// operation can be recovered when storage becomes writable. History lives in SQLite.
+const failedPersistence = new Map();
+const retryPersistence = () => {
+  for (const [key, entry] of failedPersistence) {
+    storePayment(entry);
+    failedPersistence.delete(key);
   }
 };
-
-const loadTracked = () => {
+export const trackPayment = (paymentId, type, sessionHeaders, meta = {}, projectId = '__admin__') => {
+  const entry = {
+    paymentId: String(paymentId),
+    projectId,
+    type,
+    status: type === 'qr' ? 'QrTokenCreated' : 'RemotePaymentCreated',
+    sessionHeaders: { ...sessionHeaders, projectId },
+    meta,
+    createdAt: Date.now(),
+    retryCount: 0,
+  };
+  const key = keyFor(projectId, type, paymentId);
   try {
-    if (!fs.existsSync(TRACKED_FILE)) return;
-    const raw = fs.readFileSync(TRACKED_FILE, 'utf8');
-    const data = JSON.parse(raw);
-    for (const [id, entry] of Object.entries(data)) {
-      trackedPayments.set(id, entry);
+    storePayment(entry);
+    failedPersistence.delete(key);
+    return true;
+  } catch (err) {
+    failedPersistence.set(key, entry);
+    logger.error('POLLING', `Payment ${paymentId} exists at Kaspi but persistence failed`, err.message);
+    return false;
+  }
+};
+export const ownsPayment = (projectId, type, paymentId) =>
+  failedPersistence.has(keyFor(projectId, type, paymentId)) || ownsStoredPayment(projectId, type, paymentId);
+
+export const requirePayment =
+  (type, field, source = 'query') =>
+  (req, res, next) => {
+    const paymentId = req[source]?.[field];
+    if (typeof paymentId !== 'string' && typeof paymentId !== 'number') {
+      return res.status(400).json({ error: `${field} required` });
     }
-    if (trackedPayments.size > 0) {
-      logger.info('POLLING', `Restored ${trackedPayments.size} tracked payments from file`);
+    if (!/^[0-9]+$/.test(String(paymentId)) || !Number.isSafeInteger(Number(paymentId)) || Number(paymentId) <= 0)
+      return res.status(400).json({ error: `${field} must be a positive safe-integer operation ID` });
+    const types = type ? [type] : ['qr', 'invoice'];
+    if (!req.project.isAdmin && !types.some((value) => ownsPayment(req.project.id, value, paymentId))) {
+      return res.status(404).json({ error: 'Payment not found' });
     }
-  } catch (err) {
-    logger.error('POLLING', 'Failed to load tracked payments', err.message);
-  }
-};
-
-// ─── Pending retries (persisted) ───
-
-const RETRY_FILE = path.join(__dirname, '..', 'webhook-retries.json');
-let pendingRetries = [];
-
-const saveRetries = () => {
-  try {
-    fs.writeFileSync(RETRY_FILE, JSON.stringify(pendingRetries, null, 2));
-  } catch (err) {
-    logger.error('WEBHOOK', 'Failed to save retries', err.message);
-  }
-};
-
-const loadRetries = () => {
-  try {
-    if (!fs.existsSync(RETRY_FILE)) return;
-    const raw = fs.readFileSync(RETRY_FILE, 'utf8');
-    pendingRetries = JSON.parse(raw);
-    if (pendingRetries.length > 0) {
-      logger.info('WEBHOOK', `Restored ${pendingRetries.length} pending retries from file`);
-    }
-  } catch (err) {
-    logger.error('WEBHOOK', 'Failed to load retries', err.message);
-    pendingRetries = [];
-  }
-};
-
-// ─── Status → event mapping ───
+    next();
+  };
 
 const QR_FINAL_STATUSES = {
   Processed: 'payment.success',
+  QrTokenDiscarded: 'payment.expired',
+  Expired: 'payment.expired',
   CancelledByUser: 'payment.failed',
   NotConfirmedByUser: 'payment.failed',
   CancelledByExternalSource: 'payment.failed',
@@ -89,10 +94,7 @@ const QR_FINAL_STATUSES = {
   IrisDestBlockCode5: 'payment.failed',
   IrisDestBlockCode7: 'payment.failed',
   IrisDestBlockCode10: 'payment.failed',
-  QrTokenDiscarded: 'payment.expired',
-  Expired: 'payment.expired',
 };
-
 const INVOICE_FINAL_STATUSES = {
   Processed: 'payment.success',
   RemotePaymentCanceled: 'payment.failed',
@@ -100,265 +102,43 @@ const INVOICE_FINAL_STATUSES = {
   Expired: 'payment.expired',
 };
 
-const QR_INTERMEDIATE = new Set(['QrTokenCreated', 'Wait']);
-const INVOICE_INTERMEDIATE = new Set(['RemotePaymentCreated']);
-
-// ─── Track a payment ───
-
-export const trackPayment = (paymentId, type, sessionHeaders, meta = {}) => {
-  trackedPayments.set(String(paymentId), {
-    paymentId: String(paymentId),
-    type,
-    status: type === 'qr' ? 'QrTokenCreated' : 'RemotePaymentCreated',
-    sessionHeaders,
-    meta,
-    createdAt: Date.now(),
-    retryCount: 0,
-  });
-  saveTracked();
-  logger.info('POLLING', `Tracking ${type} payment ${paymentId}`);
-};
-
-// ─── Fetch status from Kaspi (quiet — no loggedFetch) ───
-
-const fetchStatus = async (entry) => {
-  const { paymentId, type, sessionHeaders } = entry;
-
-  let decryptedSecret;
-  try {
-    decryptedSecret = decryptSecret(sessionHeaders.vtokenSecret);
-  } catch {
-    logger.error('POLLING', `Failed to decrypt session for payment ${paymentId} — session may have expired`);
-    return { error: 'session_expired' };
-  }
-
-  const session = {
-    tokenSN: sessionHeaders.tokenSN,
-    decryptedSecret,
-    profileId: sessionHeaders.profileId,
-  };
-
-  let url;
-  if (type === 'qr') {
-    url = `${KASPI_QRPAY_URL}/v02/kaspi-qr/status?qrOperationId=${paymentId}`;
-  } else {
-    url = `${KASPI_QRPAY_URL}/v02/remote/details?operationId=${paymentId}`;
-  }
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const resp = await fetch(url, {
-      headers: signedQrPayHeaders(url, session),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const json = await resp.json();
-    return json;
-  } catch (err) {
-    logger.error('POLLING', `Error fetching status for ${paymentId}:`, err.message);
-    return null;
-  }
-};
-
-// ─── Send webhooks ───
-
 const fetchWithTimeout = async (url, options, timeoutMs = 10000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, { ...options, signal: controller.signal, timeout: timeoutMs, redirect: 'error' });
+  } finally {
     clearTimeout(timer);
-    return resp;
-  } catch (err) {
-    clearTimeout(timer);
-    throw err;
   }
 };
 
-const sendWebhook = async (hook, payload, attempt = 1) => {
-  const body = JSON.stringify(payload);
-  const signature =
-    'sha256=' +
-    crypto
-      .createHmac('sha256', hook.secret || '')
-      .update(body)
-      .digest('hex');
-
-  try {
-    const resp = await fetchWithTimeout(hook.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Webhook-Signature': signature,
-      },
-      body,
-    });
-    logger.info('WEBHOOK', `→ ${hook.url} | ${resp.status} ${resp.statusText}`);
-    // Remove from pending retries on success
-    pendingRetries = pendingRetries.filter(
-      (r) =>
-        !(r.hook.url === hook.url && r.payload.paymentId === payload.paymentId && r.payload.event === payload.event),
-    );
-    saveRetries();
-  } catch (err) {
-    logger.error('WEBHOOK', `→ ${hook.url} | attempt ${attempt} FAILED: ${err.message}`);
-    if (attempt < 3) {
-      // Save retry to disk so it survives restarts
-      pendingRetries.push({
-        hook,
-        payload,
-        attempt: attempt + 1,
-        executeAfter: Date.now() + (attempt === 1 ? 5000 : 30000),
-      });
-      saveRetries();
-    } else {
-      logger.error('WEBHOOK', `→ ${hook.url} | FAILED after 3 retries`);
-      // Remove from pending retries
-      pendingRetries = pendingRetries.filter(
-        (r) =>
-          !(r.hook.url === hook.url && r.payload.paymentId === payload.paymentId && r.payload.event === payload.event),
-      );
-      saveRetries();
-    }
+const fetchStatus = async (entry) => {
+  const { paymentId, type } = entry;
+  const sessionHeaders = paymentSession(entry);
+  entry.sessionHeaders = sessionHeaders;
+  if (entry.projectId !== (sessionHeaders.projectId || '__admin__')) {
+    throw new Error('Payment session belongs to a different project');
   }
-};
-
-const sendWebhooks = (event, payload) => {
-  const hooks = getWebhooksByEvent(event);
-  for (const hook of hooks) {
-    sendWebhook(hook, payload);
-  }
-};
-
-// ─── Process pending retries ───
-
-const processRetries = async () => {
-  const now = Date.now();
-  const due = pendingRetries.filter((r) => r.executeAfter <= now);
-  // Remove due items from list before executing (they'll be re-added on failure)
-  pendingRetries = pendingRetries.filter((r) => r.executeAfter > now);
-  saveRetries();
-
-  for (const r of due) {
-    await sendWebhook(r.hook, r.payload, r.attempt);
-  }
-};
-
-// ─── Resolve event from status ───
-
-const resolveEvent = (type, status) => {
-  if (type === 'qr') {
-    if (QR_INTERMEDIATE.has(status)) return null;
-    return QR_FINAL_STATUSES[status] || 'payment.failed';
-  } else {
-    if (INVOICE_INTERMEDIATE.has(status)) return null;
-    return INVOICE_FINAL_STATUSES[status] || 'payment.failed';
-  }
-};
-
-// ─── Poll cycle ───
-
-const pollOnce = async () => {
-  let changed = false;
-
-  for (const [id, entry] of trackedPayments) {
-    // TTL check via expireDate
-    if (entry.meta.expireDate) {
-      const expiry = new Date(entry.meta.expireDate).getTime();
-      if (Date.now() > expiry && resolveEvent(entry.type, entry.status) === null) {
-        logger.info('POLLING', `Payment ${id} expired (TTL)`);
-        sendWebhooks(
-          'payment.expired',
-          buildPayload('payment.expired', entry, { Status: 'Expired', StatusDesc: 'Время оплаты истекло' }),
-        );
-        trackedPayments.delete(id);
-        changed = true;
-        continue;
-      }
-    }
-
-    const result = await fetchStatus(entry);
-
-    // Handle session expiration
-    if (result && result.error === 'session_expired') {
-      entry.retryCount++;
-      if (entry.retryCount > 3) {
-        logger.warn('POLLING', `Payment ${id} — session expired, sending session.expired webhook`);
-        sendWebhooks(
-          'payment.failed',
-          buildPayload('payment.failed', entry, {
-            Status: 'SessionExpired',
-            StatusDesc: 'Сессия Kaspi истекла, невозможно проверить статус платежа',
-          }),
-        );
-        trackedPayments.delete(id);
-        changed = true;
-      }
-      continue;
-    }
-
-    if (!result || !result.Data) {
-      // Kaspi returns StatusCode -101001 when session was evicted (login from another device)
-      if (result && result.StatusCode === -101001) {
-        logger.warn('POLLING', `Payment ${id} — session evicted (StatusCode -101001)`);
-        sendWebhooks(
-          'payment.lost',
-          buildPayload('payment.lost', entry, {
-            Status: 'SessionExpired',
-            StatusDesc: 'Сессия Kaspi вытеснена (вход с другого устройства), статус платежа неизвестен',
-          }),
-        );
-        trackedPayments.delete(id);
-        changed = true;
-        continue;
-      }
-
-      entry.retryCount++;
-      if (entry.retryCount > 10) {
-        logger.warn('POLLING', `Removing payment ${id} after 10 failed attempts`);
-        sendWebhooks(
-          'payment.lost',
-          buildPayload('payment.lost', entry, {
-            Status: 'PollingFailed',
-            StatusDesc: `Не удалось получить статус платежа после ${entry.retryCount} попыток`,
-          }),
-        );
-        trackedPayments.delete(id);
-        changed = true;
-      }
-      continue;
-    }
-
-    // Reset retry count on successful fetch
-    entry.retryCount = 0;
-
-    const newStatus = result.Data.Status;
-    if (newStatus === entry.status) continue;
-
-    logger.info('POLLING', `Payment ${id}: ${entry.status} → ${newStatus}`);
-    entry.status = newStatus;
-    changed = true;
-
-    const event = resolveEvent(entry.type, newStatus);
-    if (event) {
-      sendWebhooks(event, buildPayload(event, entry, result.Data));
-      trackedPayments.delete(id);
-    }
-  }
-
-  if (changed) {
-    saveTracked();
-  }
+  const session = { ...sessionHeaders, decryptedSecret: decryptSecret(sessionHeaders.vtokenSecret) };
+  const endpoint =
+    type === 'qr'
+      ? `kaspi-qr/status?qrOperationId=${encodeURIComponent(paymentId)}`
+      : `remote/details?operationId=${encodeURIComponent(paymentId)}`;
+  const url = `${KASPI_QRPAY_URL}/v02/${endpoint}`;
+  const response = await fetchWithTimeout(url, { headers: signedQrPayHeaders(url, session) }, 15000);
+  if (!response.ok) throw new Error(`Kaspi HTTP ${response.status}`);
+  return response.json();
 };
 
 const buildPayload = (event, entry, data) => ({
   event,
+  projectId: entry.projectId,
   paymentId: entry.paymentId,
   type: entry.type,
   status: data.Status || entry.status,
   statusDesc: data.StatusDesc || '',
-  amount: entry.meta.amount || data.Amount || null,
+  amount: entry.meta.amount ?? data.Amount ?? null,
+  orderId: entry.meta.orderId || null,
   qrToken: entry.meta.qrToken || null,
   receiptUrl: entry.meta.receiptUrl || data.ReceiptUrl || null,
   orderNumber: entry.meta.orderNumber || data.OrderNumber || null,
@@ -366,51 +146,131 @@ const buildPayload = (event, entry, data) => ({
   timestamp: new Date().toISOString(),
 });
 
-// ─── Polling loop (setTimeout-based, no overlap) ───
+const finishPayment = (entry, event, data) => {
+  const payload = buildPayload(event, entry, data);
+  const deliveries = hooksFor(entry.projectId, event).map((hook) => ({
+    id: crypto.randomUUID(),
+    projectId: entry.projectId,
+    hookId: hook.id || null,
+    url: hook.url,
+    payload,
+    attempt: 1,
+    executeAfter: Date.now(),
+  }));
+  // Commit final status, credential removal and the outbox before any HTTP request.
+  finishStoredPayment(entry, event, data.Status || entry.status, deliveries);
+};
+
+const processRetries = async () => {
+  for (const delivery of dueDeliveries(Date.now())) {
+    const hook = hooksFor(delivery.projectId, delivery.payload.event).find(
+      (candidate) => candidate.url === delivery.url && (!delivery.hookId || candidate.id === delivery.hookId),
+    );
+    let done = !hook;
+    if (hook) {
+      const body = JSON.stringify(delivery.payload);
+      const signature =
+        'sha256=' +
+        crypto
+          .createHmac('sha256', hook.secret || '')
+          .update(body)
+          .digest('hex');
+      try {
+        const response = await fetchWithTimeout(hook.url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Webhook-Signature': signature,
+            'X-Webhook-ID': delivery.id,
+          },
+          body,
+        });
+        // fetch resolves for HTTP 4xx/5xx: those responses still need a retry.
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        done = true;
+      } catch (err) {
+        logger.error('WEBHOOK', `Delivery ${delivery.id}, attempt ${delivery.attempt}: ${err.message}`);
+        done = delivery.attempt >= 3;
+        delivery.executeAfter = Date.now() + (delivery.attempt === 1 ? 5000 : 30000);
+        delivery.attempt++;
+      }
+    }
+    if (done) removeDelivery(delivery.id);
+    else retryDelivery(delivery);
+  }
+};
+
+// Exported for deterministic integration checks; the timer never overlaps cycles.
+export const pollOnce = async () => {
+  retryPersistence();
+  for (const entry of pendingPayments()) {
+    let result;
+    try {
+      result = await fetchStatus(entry);
+    } catch (err) {
+      logger.warn('POLLING', `Payment ${entry.paymentId}: ${err.message}`);
+    }
+    if (result?.StatusCode === -101001) {
+      markMerchantSessionInactive(entry.projectId, entry.sessionHeaders.tokenSN);
+      finishPayment(entry, 'payment.lost', { Status: 'SessionExpired', StatusDesc: 'Статус платежа неизвестен' });
+      continue;
+    }
+    if (!result?.Data?.Status) {
+      entry.retryCount++;
+      if (entry.retryCount > 10) {
+        finishPayment(entry, 'payment.lost', {
+          Status: 'PollingFailed',
+          StatusDesc: 'Не удалось проверить статус платежа',
+        });
+      } else updatePendingPayment(entry);
+      continue;
+    }
+    entry.retryCount = 0;
+    entry.status = result.Data.Status;
+    const event = (entry.type === 'qr' ? QR_FINAL_STATUSES : INVOICE_FINAL_STATUSES)[entry.status];
+    if (event) finishPayment(entry, event, result.Data);
+    else if (
+      ['QrTokenCreated', 'Wait', 'RemotePaymentCreated'].includes(entry.status) &&
+      entry.meta.expireDate &&
+      Date.now() > new Date(entry.meta.expireDate).getTime()
+    ) {
+      finishPayment(entry, 'payment.expired', { Status: 'Expired', StatusDesc: 'Время оплаты истекло' });
+    } else updatePendingPayment(entry);
+    // Unknown statuses stay pending: do not turn an undocumented bank status into a failed payment.
+  }
+  await processRetries();
+};
 
 let pollActive = false;
 let pollTimer = null;
-const POLL_MS = 3000;
-
+let currentPoll = null;
 const scheduleNext = () => {
   if (!pollActive) return;
   pollTimer = setTimeout(async () => {
+    currentPoll = pollOnce();
     try {
-      if (trackedPayments.size > 0) {
-        await pollOnce();
-      }
-      // Process pending webhook retries
-      if (pendingRetries.length > 0) {
-        await processRetries();
-      }
+      await currentPoll;
     } catch (err) {
-      logger.error('POLLING', 'Unexpected error:', err.message);
+      logger.error('POLLING', 'Unexpected error', err.message);
+    } finally {
+      currentPoll = null;
+      scheduleNext();
     }
-    scheduleNext();
-  }, POLL_MS);
+  }, 3000);
 };
 
 export const startPolling = () => {
   if (pollActive) return;
-
-  // Load persisted state
-  loadTracked();
-  loadRetries();
-
   pollActive = true;
   scheduleNext();
-  logger.info('POLLING', 'Started (interval: 3s, persistence: enabled)');
 };
 
-export const stopPolling = () => {
+export const stopPolling = async () => {
   pollActive = false;
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }
-  saveTracked();
-  saveRetries();
-  logger.info('POLLING', 'Stopped');
+  clearTimeout(pollTimer);
+  await currentPoll;
+  retryPersistence();
 };
 
-export const getTrackedPayments = () => Object.fromEntries(trackedPayments);
+export const getTrackedPayments = () =>
+  Object.fromEntries(pendingEntries().map((entry) => [keyFor(entry.projectId, entry.type, entry.paymentId), entry]));

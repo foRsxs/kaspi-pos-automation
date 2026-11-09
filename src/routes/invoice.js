@@ -1,32 +1,16 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
 import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
-import { decryptSecret } from '../crypto.js';
-import { trackPayment } from '../polling.js';
+import { requireSession } from '../merchantSession.js';
+import { trackPayment, requirePayment } from '../polling.js';
+
+import { requireAmount } from '../amount.js';
+import { requireAdmin, requireActiveProject } from '../projects.js';
 
 const router = Router();
 
-// Extract session from request headers
-const extractSession = (req) => ({
-  tokenSN: req.headers['x-token-sn'] || null,
-  profileId: req.headers['x-profile-id'] || null,
-  vtokenSecret: req.headers['x-vtoken-secret'] || null,
-});
-
-const requireAuth = (req, res, next) => {
-  const session = extractSession(req);
-  if (!session.tokenSN) return res.status(401).json({ error: 'Missing X-Token-SN header.' });
-  if (!session.vtokenSecret) return res.status(401).json({ error: 'Missing X-Vtoken-Secret header.' });
-  try {
-    session.decryptedSecret = decryptSecret(session.vtokenSecret);
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired vtokenSecret. Re-authenticate.' });
-  }
-  req.session = session;
-  next();
-};
-
-router.use(requireAuth);
+router.use('/history', requireAdmin);
+router.use(requireSession);
 
 // ─── Client info ───
 
@@ -35,7 +19,7 @@ router.get('/client-info', async (req, res) => {
   if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
 
   try {
-    const url = `${KASPI_QRPAY_URL}/v01/remote/client-info?phoneNumber=${phoneNumber}`;
+    const url = `${KASPI_QRPAY_URL}/v01/remote/client-info?phoneNumber=${encodeURIComponent(phoneNumber)}`;
     const resp = await loggedFetch(url, { headers: signedQrPayHeaders(url, req.session) });
     res.json(await resp.json());
   } catch (err) {
@@ -45,13 +29,13 @@ router.get('/client-info', async (req, res) => {
 
 // ─── Create invoice ───
 
-router.post('/create', async (req, res) => {
+router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res) => {
   const { phoneNumber, amount, comment } = req.body;
-  if (!phoneNumber || !amount) return res.status(400).json({ error: 'phoneNumber and amount required' });
+  if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/create`;
-    const payload = JSON.stringify({ PhoneNumber: phoneNumber, Amount: Number(amount), Comment: comment || '' });
+    const payload = JSON.stringify({ PhoneNumber: phoneNumber, Amount: amount, Comment: comment || '' });
     const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
     const resp = await loggedFetch(url, {
       method: 'POST',
@@ -61,21 +45,26 @@ router.post('/create', async (req, res) => {
     const kaspiResponse = await resp.json();
     const d = kaspiResponse.Data;
     if (d && d.QrOperationId) {
-      trackPayment(
+      const persisted = trackPayment(
         d.QrOperationId,
         'invoice',
         {
+          projectId: req.kaspiProject.id,
           tokenSN: req.session.tokenSN,
-          vtokenSecret: req.headers['x-vtoken-secret'],
+          vtokenSecret: req.session.vtokenSecret,
           profileId: req.session.profileId,
         },
         {
-          amount: d.Amount,
+          amount: d.Amount ?? req.body.amount,
+          orderId: req.body.orderId,
           clientMobile: d.ClientMobile,
           receiptUrl: d.ReceiptUrl,
           orderNumber: d.OrderNumber,
         },
+        req.kaspiProject.id,
       );
+      kaspiResponse.tracking = { persisted };
+      if (!persisted) res.status(202);
     }
     res.json(kaspiResponse);
   } catch (err) {
@@ -85,9 +74,8 @@ router.post('/create', async (req, res) => {
 
 // ─── Invoice details ───
 
-router.get('/details', async (req, res) => {
+router.get('/details', requirePayment('invoice', 'operationId'), async (req, res) => {
   const { operationId } = req.query;
-  if (!operationId) return res.status(400).json({ error: 'operationId required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v02/remote/details?operationId=${operationId}`;
@@ -100,9 +88,8 @@ router.get('/details', async (req, res) => {
 
 // ─── Cancel invoice ───
 
-router.post('/cancel', async (req, res) => {
+router.post('/cancel', requirePayment('invoice', 'operationId', 'body'), async (req, res) => {
   const { operationId } = req.body;
-  if (!operationId) return res.status(400).json({ error: 'operationId required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/cancel`;

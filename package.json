@@ -23,11 +23,11 @@
     "invoice"
   ],
   "engines": {
-    "node": ">=20.6.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/**/*.test.js",
+    "test": "node --experimental-test-module-mocks --test test/**/*.test.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "regen:keypair": "node scripts/regen-keypair.js",
@@ -42,5 +42,8 @@
     "@eslint/js": "^10.0.1",
     "eslint": "^10.3.0",
     "prettier": "^3.8.3"
+  },
+  "overrides": {
+    "qs": "^6.16.2"
   }
 }
