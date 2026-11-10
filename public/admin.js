@@ -14,21 +14,22 @@ const adminState = {
   connectingProjectId: null,
   connectReturnTo: 'dashboard',
 };
-const adminKey = () => $('adminApiKey').value.trim() || sessionStorage.getItem('kaspi_admin_key') || '';
+const adminFetch = (path, options = {}) => window.adminRequest(path, options);
 
-const adminFetch = async (path, options = {}) => {
-  const key = adminKey();
-  if (!key) throw new Error('Введите ключ администратора сервера');
-  const headers = { Authorization: `Bearer ${key}`, ...(options.headers || {}) };
-  const response = await fetch(path, { ...options, cache: 'no-store', headers });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(result.error || `Ошибка запроса: HTTP ${response.status}`);
-    error.status = response.status;
-    error.code = result.code;
-    throw error;
-  }
-  return result;
+const clearAdminUI = () => {
+  adminState.projects = [];
+  adminState.editId = null;
+  adminState.pendingAction = null;
+  adminState.connectingProjectId = null;
+  adminState.connectReturnTo = 'dashboard';
+  $('projectsGrid').replaceChildren();
+  $('archivedProjects').replaceChildren();
+  $('projectCount').textContent = '0';
+  $('projectSummary').textContent = 'Создайте первый проект для начала работы.';
+  $('projectSelect').replaceChildren(new Option('Выберите проект', ''));
+  $('projectForm').reset();
+  $('webhookRows').replaceChildren();
+  $('adminNotice').classList.add('hidden');
 };
 
 const showAdminMessage = (message, type = 'info') => {
@@ -225,12 +226,8 @@ const syncProjectSelect = () => {
 };
 
 const loadAdminProjects = async () => {
-  const button = $('adminLogin').classList.contains('hidden') ? $('btnRefreshProjects') : $('btnLoadProjects');
-  if (!adminKey()) {
-    showAdminMessage('Введите ключ администратора сервера', 'err');
-    $('adminApiKey').focus();
-    return false;
-  }
+  const button = $('adminLogin').classList.contains('hidden') ? $('btnRefreshProjects') : $('btnAdminLogin');
+  if (!window.isAdminLoggedIn()) return false;
   const buttonLabel = button.textContent;
   button.disabled = true;
   button.textContent = 'Загрузка…';
@@ -238,7 +235,6 @@ const loadAdminProjects = async () => {
   try {
     const query = $('showArchived').checked ? '?includeArchived=true' : '';
     const result = await adminFetch(`/api/projects${query}`);
-    sessionStorage.setItem('kaspi_admin_key', adminKey());
     adminState.projects = Array.isArray(result.projects) ? result.projects : [];
     const editedProject = adminState.projects.find((project) => project.id === adminState.editId);
     if (editedProject && $('projectDialog').open) updateProjectSettingsInfo(editedProject);
@@ -813,17 +809,6 @@ const goToDashboard = async () => {
   await loadAdminProjects();
 };
 
-const adminLogout = () => {
-  resetBankWorkspace();
-  sessionStorage.removeItem('kaspi_admin_key');
-  $('adminApiKey').value = '';
-  $('projectDashboard').classList.add('hidden');
-  $('bankWorkspace').classList.add('hidden');
-  $('adminLogin').classList.remove('hidden');
-  showAdminMessage('');
-  $('adminApiKey').focus();
-};
-
 $('projectForm').addEventListener('submit', submitProjectForm);
 $('btnConfirmAction').addEventListener('click', runConfirmAction);
 $('btnOpenAccountSettings').addEventListener('click', () => openAccountFromSettings(false));
@@ -834,11 +819,8 @@ $('connectDialog').addEventListener('cancel', (event) => {
   event.preventDefault();
   closeConnectDialog();
 });
-$('adminApiKey').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') loadAdminProjects();
-});
-
 Object.assign(window, {
+  clearAdminUI,
   loadProjects: loadAdminProjects,
   toggleArchivedProjects,
   connectProject,
@@ -854,5 +836,4 @@ Object.assign(window, {
   clearSecretDialog,
   closeConfirmDialog,
   goToDashboard,
-  adminLogout,
 });

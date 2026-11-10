@@ -5,7 +5,8 @@ services:
     init: true
     stop_grace_period: 30s
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       NODE_ENV: production
       PORT: '3000'

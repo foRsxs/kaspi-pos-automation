@@ -4,10 +4,9 @@ import path from 'node:path';
 import { db, transaction } from './database.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { ROOT_DIR } from './paths.js';
+import { getAdminApiKeyHashHex } from './adminStore.js';
 
 const MIGRATION_KEY = 'legacy_projects_v1';
-const ENCRYPTION_CHECK_KEY = 'encryption_key_check_v1';
-const ENCRYPTION_CHECK = Buffer.from('kaspi-project-store-encryption-check-v1', 'utf8');
 const VALID_PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const VALID_API_KEY = /^[\x21-\x7e]{32,256}$/;
 const VALID_WEBHOOK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,13 +25,6 @@ export class ProjectStoreError extends Error {
 const storeError = (message, statusCode, code) => new ProjectStoreError(message, statusCode, code);
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
-
-const adminApiKey = process.env.ADMIN_API_KEY;
-if (!VALID_API_KEY.test(adminApiKey || '')) {
-  throw new Error('ADMIN_API_KEY должен содержать 32–256 печатных ASCII-символов без пробелов');
-}
-export const adminKeyHash = Buffer.from(sha256(adminApiKey), 'hex');
-const adminKeyHashHex = adminKeyHash.toString('hex');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS store_meta (
@@ -69,47 +61,6 @@ if (!projectColumns.has('key_encrypted')) {
   db.exec('ALTER TABLE projects ADD COLUMN key_encrypted TEXT');
 }
 
-const checkEncryptionKey = () => {
-  const verify = (encrypted) => {
-    try {
-      if (!decryptSecret(encrypted).equals(ENCRYPTION_CHECK)) throw new Error('mismatch');
-    } catch {
-      throw new Error('TOKEN_SECRET_KEY не совпадает с ключом, которым зашифрованы данные projects.sqlite');
-    }
-  };
-
-  const storedCheck = db.prepare('SELECT value FROM store_meta WHERE key = ?').get(ENCRYPTION_CHECK_KEY);
-  if (storedCheck) {
-    verify(storedCheck.value);
-    return;
-  }
-
-  try {
-    for (const row of db.prepare('SELECT secret_encrypted FROM webhooks').all()) {
-      decryptSecret(row.secret_encrypted);
-    }
-    for (const row of db.prepare('SELECT key_encrypted FROM projects WHERE key_encrypted IS NOT NULL').all()) {
-      decryptSecret(row.key_encrypted);
-    }
-  } catch {
-    throw new Error('TOKEN_SECRET_KEY не совпадает с ключом, которым зашифрованы данные projects.sqlite');
-  }
-
-  transaction(() => {
-    const existing = db.prepare('SELECT value FROM store_meta WHERE key = ?').get(ENCRYPTION_CHECK_KEY);
-    if (existing) {
-      verify(existing.value);
-    } else {
-      db.prepare('INSERT INTO store_meta (key, value) VALUES (?, ?)').run(
-        ENCRYPTION_CHECK_KEY,
-        encryptSecret(ENCRYPTION_CHECK),
-      );
-    }
-  });
-};
-
-checkEncryptionKey();
-
 const legacyFile = process.env.PROJECTS_FILE
   ? path.resolve(process.env.PROJECTS_FILE)
   : path.join(ROOT_DIR, 'projects.json');
@@ -143,7 +94,7 @@ const readLegacyProjects = () => {
   if (!Array.isArray(configuration)) throw new Error('PROJECTS_FILE должен содержать JSON-массив проектов');
 
   const ids = new Set(['__admin__']);
-  const keyHashes = new Set([adminKeyHashHex]);
+  const keyHashes = new Set([getAdminApiKeyHashHex()]);
   const result = [];
 
   for (const project of configuration) {
@@ -229,7 +180,7 @@ const migrateLegacyProjects = () => {
 
 migrateLegacyProjects();
 
-if (db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(adminKeyHashHex)) {
+if (db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(getAdminApiKeyHashHex())) {
   throw new Error('ADMIN_API_KEY совпадает с API-ключом проекта. Задайте отдельный ключ администратора');
 }
 
@@ -370,7 +321,7 @@ export const createProject = (input = {}) => {
   const keyEncrypted = encryptSecret(Buffer.from(apiKey, 'ascii'));
 
   const projectId = transaction(() => {
-    if (keyHash === adminKeyHashHex || db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(keyHash)) {
+    if (keyHash === getAdminApiKeyHashHex() || db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(keyHash)) {
       throw storeError('Сгенерированный API-ключ уже используется; повторите запрос', 409);
     }
     let selectedId = id;
@@ -504,7 +455,7 @@ export const rotateProjectKey = (id) => {
     const project = db.prepare('SELECT id, status FROM projects WHERE id = ?').get(id);
     if (!project) throw storeError('Проект не найден', 404);
     if (project.status === 'archived') throw storeError('Архивный проект нельзя изменить', 409);
-    if (keyHash === adminKeyHashHex || db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(keyHash)) {
+    if (keyHash === getAdminApiKeyHashHex() || db.prepare('SELECT 1 FROM projects WHERE key_hash = ?').get(keyHash)) {
       throw storeError('Сгенерированный API-ключ уже используется; повторите запрос', 409);
     }
     db.prepare('UPDATE projects SET key_hash = ?, key_encrypted = ?, updated_at = ? WHERE id = ?').run(

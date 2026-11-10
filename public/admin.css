@@ -82,6 +82,49 @@ body {
   margin-bottom: 20px;
 }
 
+.login-form > .field-hint,
+.security-form > .field-hint {
+  display: block;
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
+.admin-password-gate {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: var(--canvas);
+}
+
+.admin-password-gate.hidden {
+  display: none;
+}
+
+.admin-password-card {
+  width: min(520px, 100%);
+  margin: auto;
+  padding: 32px;
+}
+
+.admin-password-card h2 {
+  margin: 6px 0 8px;
+  font-size: 24px;
+}
+
+.admin-password-card > .muted {
+  margin-bottom: 17px;
+}
+
+.admin-password-card .field-hint {
+  display: block;
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
 .section-eyebrow {
   color: #858992;
   font-size: 10px;
@@ -813,6 +856,129 @@ input[type='checkbox'] {
   color: #555a63;
 }
 
+.server-settings-dialog {
+  width: min(680px, calc(100vw - 28px));
+}
+
+.server-settings-section {
+  margin-top: 21px;
+  padding-top: 19px;
+  border-top: 1px solid var(--line);
+}
+
+.server-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 11px;
+}
+
+.server-settings-heading h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.server-settings-heading .muted {
+  font-size: 13px;
+}
+
+.settings-status {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f0f1f3;
+  color: #626771;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.settings-status.is-configured {
+  background: #eaf6ed;
+  color: var(--success);
+}
+
+.settings-status.is-missing {
+  background: #fff2d9;
+  color: var(--warning);
+}
+
+.server-settings-section > .field-hint {
+  display: block;
+  line-height: 1.5;
+}
+
+.security-form {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.security-form .btn {
+  margin-top: 15px;
+}
+
+.server-key-controls {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.server-key-controls > label {
+  margin-top: 7px;
+}
+
+.server-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.server-key-actions .btn,
+.server-api-key-value .btn {
+  width: auto;
+  margin: 0;
+  padding: 9px 13px;
+  font-size: 13px;
+}
+
+.server-api-key-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.server-api-key-value.hidden {
+  display: none;
+}
+
+.server-api-key-value code {
+  min-width: 0;
+  flex: 1;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #252830;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.server-key-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 16px 0 0;
+  color: #555a63;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.server-key-confirmation input {
+  flex: 0 0 17px;
+  margin-top: 1px;
+}
+
 @media (max-width: 760px) {
   .container {
     padding: 20px 16px 40px;
@@ -851,6 +1017,16 @@ input[type='checkbox'] {
     padding: 23px 18px;
   }
 
+  .admin-password-gate {
+    align-items: start;
+    padding: 14px;
+  }
+
+  .admin-password-card {
+    margin: auto 0;
+    padding: 23px 18px;
+  }
+
   .bank-project-controls {
     align-items: stretch;
     flex-direction: column;
@@ -874,6 +1050,17 @@ input[type='checkbox'] {
 
   .dialog-form {
     padding: 20px 16px;
+  }
+
+  .server-key-actions,
+  .server-api-key-value {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .server-key-actions .btn,
+  .server-api-key-value .btn {
+    width: 100%;
   }
 
   .webhook-heading {
@@ -901,4 +1088,19 @@ input[type='checkbox'] {
   .secret-value-row .btn {
     width: 100%;
   }
+}
+.password-settings-details {
+  margin-top: 14px;
+}
+.password-settings-details > summary {
+  width: fit-content;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.password-settings-details[open] > summary {
+  margin-bottom: 14px;
 }

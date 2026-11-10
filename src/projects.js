@@ -1,5 +1,6 @@
-import crypto from 'node:crypto';
-import { findProjectByApiKey, getProject, adminKeyHash } from './projectStore.js';
+import { findProjectByApiKey, getProject } from './projectStore.js';
+import { isAdminApiKey } from './adminStore.js';
+import { sessionForRequest, validCsrf } from './adminAuth.js';
 
 export { listProjects, projectWebhooks } from './projectStore.js';
 
@@ -20,12 +21,24 @@ export const selectKaspiProject = (req, res, next) => {
 };
 
 export const authenticateProject = (req, res, next) => {
+  if (!req.get('Authorization')) {
+    const session = sessionForRequest(req);
+    if (!session) return res.status(401).json({ error: 'Войдите в админку или укажите Bearer API-ключ' });
+    if (session.mustChangePassword)
+      return res
+        .status(403)
+        .json({ error: 'Сначала задайте постоянный пароль администратора', code: 'ADMIN_PASSWORD_CHANGE_REQUIRED' });
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !validCsrf(req, session))
+      return res
+        .status(403)
+        .json({ error: 'Запрос отклонён. Обновите страницу и повторите вход.', code: 'CSRF_INVALID' });
+    req.project = { id: '__admin__', isAdmin: true };
+    req.adminSession = session;
+    return next();
+  }
   const match = /^Bearer ([\x21-\x7e]{32,256})$/.exec(req.get('Authorization') || '');
   if (!match) return res.status(401).json({ error: 'Укажите действительный Bearer API-ключ' });
-  const digest = crypto.createHash('sha256').update(match[1]).digest();
-  const principal = crypto.timingSafeEqual(digest, adminKeyHash)
-    ? { id: '__admin__', isAdmin: true }
-    : findProjectByApiKey(match[1]);
+  const principal = isAdminApiKey(match[1]) ? { id: '__admin__', isAdmin: true } : findProjectByApiKey(match[1]);
   if (!principal) return res.status(401).json({ error: 'API-ключ недействителен или проект отключён' });
   req.project = principal;
   next();

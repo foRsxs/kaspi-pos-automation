@@ -9,6 +9,8 @@ import qrRoutes from './src/routes/qr.js';
 import historyRoutes from './src/routes/history.js';
 import refundRoutes from './src/routes/refund.js';
 import sessionRoutes from './src/routes/session.js';
+import adminRoutes from './src/routes/admin.js';
+import { logInitialAdminPassword } from './src/adminStore.js';
 import { startPolling, stopPolling, listPayments } from './src/polling.js';
 import 'dotenv/config';
 
@@ -24,6 +26,7 @@ app.use(express.static(path.join(ROOT_DIR, 'public')));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.use('/api/admin', adminRoutes);
 app.use('/api', authenticateProject);
 app.use('/api/projects', projectRoutes);
 app.use('/api', selectKaspiProject);
@@ -39,8 +42,9 @@ app.use('/api/session', requireAdmin, sessionRoutes);
 
 app.use((err, _req, res, _next) => {
   const errorStatus = err.status ?? err.statusCode;
-  const status = [400, 404, 409, 413, 422].includes(errorStatus) ? errorStatus : 500;
+  const status = [400, 401, 403, 404, 409, 413, 422, 429].includes(errorStatus) ? errorStatus : 500;
   if (status === 500) console.error('API error:', err.message);
+  if (status === 429 && err.retryAfter) res.set('Retry-After', String(err.retryAfter));
   res.status(status).json({
     error: status === 500 ? 'Internal server error' : err.message,
     ...(status < 500 && typeof err.code === 'string' ? { code: err.code } : {}),
@@ -49,6 +53,7 @@ app.use((err, _req, res, _next) => {
 
 export const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  🟢 Kaspi Pay App running at http://localhost:${PORT}\n`);
+  logInitialAdminPassword();
 });
 startPolling();
 
