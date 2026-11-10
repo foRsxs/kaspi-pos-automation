@@ -10,6 +10,7 @@ import historyRoutes from './src/routes/history.js';
 import refundRoutes from './src/routes/refund.js';
 import sessionRoutes from './src/routes/session.js';
 import adminRoutes from './src/routes/admin.js';
+import webhookDeliveryRoutes from './src/routes/webhookDeliveries.js';
 import { logInitialAdminPassword } from './src/adminStore.js';
 import { startPolling, stopPolling, listPayments } from './src/polling.js';
 import 'dotenv/config';
@@ -30,6 +31,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api', authenticateProject);
 app.use('/api/projects', projectRoutes);
 app.use('/api', selectKaspiProject);
+app.use('/api/webhook-deliveries', webhookDeliveryRoutes);
 app.get('/api/payments', (req, res) =>
   res.set('Cache-Control', 'no-store').json(listPayments(req.kaspiProject.id, req.query)),
 );

@@ -364,6 +364,7 @@ const clearAdminSessionUI = (message = '') => {
   updateSecurityState({ authenticated: false, mustChangePassword: false, csrfToken: '' });
   window.resetBankWorkspace?.();
   window.closePayments?.();
+  window.closeWebhooks?.();
   window.clearAdminUI?.();
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
   window.clearSecretDialog?.();

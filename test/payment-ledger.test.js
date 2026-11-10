@@ -464,7 +464,7 @@ test('payment finalization atomically rolls back credentials and outbox on deliv
       retryCount: 0,
     };
     storePayment(entry);
-    const before = db.prepare('SELECT status,event,session_encrypted FROM payments WHERE project_id=? AND type=? AND payment_id=?')
+    const before = db.prepare('SELECT status,event,session_encrypted,amount_json,meta_json FROM payments WHERE project_id=? AND type=? AND payment_id=?')
       .get(entry.projectId, entry.type, entry.paymentId);
     assert.equal(before.event, null);
     assert.ok(before.session_encrypted);
@@ -478,6 +478,7 @@ test('payment finalization atomically rolls back credentials and outbox on deliv
       attempt: 1,
       executeAfter: 200,
     };
+    entry.meta.amount = 290;
     db.exec(\`CREATE TRIGGER fail_atomic_delivery BEFORE INSERT ON webhook_deliveries
       BEGIN SELECT RAISE(ABORT, 'intentional delivery failure'); END;\`);
     assert.throws(
@@ -485,20 +486,24 @@ test('payment finalization atomically rolls back credentials and outbox on deliv
       /intentional delivery failure/,
     );
 
-    const afterFailure = db.prepare('SELECT status,event,session_encrypted FROM payments WHERE project_id=? AND type=? AND payment_id=?')
+    const afterFailure = db.prepare('SELECT status,event,session_encrypted,amount_json,meta_json FROM payments WHERE project_id=? AND type=? AND payment_id=?')
       .get(entry.projectId, entry.type, entry.paymentId);
     assert.equal(afterFailure.status, 'Wait');
     assert.equal(afterFailure.event, null);
     assert.equal(afterFailure.session_encrypted, before.session_encrypted);
+    assert.equal(afterFailure.amount_json, before.amount_json);
+    assert.equal(afterFailure.meta_json, before.meta_json);
     assert.equal(db.prepare('SELECT count(*) AS count FROM webhook_deliveries').get().count, 0);
 
     db.exec('DROP TRIGGER fail_atomic_delivery');
     finishStoredPayment(entry, 'payment.success', 'Processed', [delivery]);
-    const afterSuccess = db.prepare('SELECT status,event,session_encrypted FROM payments WHERE project_id=? AND type=? AND payment_id=?')
+    const afterSuccess = db.prepare('SELECT status,event,session_encrypted,amount_json,meta_json FROM payments WHERE project_id=? AND type=? AND payment_id=?')
       .get(entry.projectId, entry.type, entry.paymentId);
     assert.equal(afterSuccess.status, 'Processed');
     assert.equal(afterSuccess.event, 'payment.success');
     assert.equal(afterSuccess.session_encrypted, null);
+    assert.equal(JSON.parse(afterSuccess.amount_json), 290);
+    assert.equal(JSON.parse(afterSuccess.meta_json).amount, 290);
     assert.equal(db.prepare('SELECT count(*) AS count FROM webhook_deliveries').get().count, 1);
 
     finishStoredPayment(entry, 'payment.success', 'Processed', [{ ...delivery, id: 'atomic-outbox-duplicate' }]);

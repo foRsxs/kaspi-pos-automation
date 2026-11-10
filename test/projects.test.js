@@ -47,6 +47,8 @@ it('isolates project payments and persists signed webhook retries and completed 
   );
   let operation = 100;
   let bankStatus = 'Wait';
+  let createAmount = 1.01;
+  let statusAmount;
   let hookStatus = 500;
   let now = Date.now();
   mock.method(Date, 'now', () => now);
@@ -60,8 +62,8 @@ it('isolates project payments and persists signed webhook retries and completed 
       }
       bankRequests.push({ url, options });
       const Data = url.includes('/create')
-        ? { QrOperationId: ++operation, QrToken: 'https://qr.kaspi.kz/test', Amount: 1.01 }
-        : { Status: bankStatus };
+        ? { QrOperationId: ++operation, QrToken: 'https://qr.kaspi.kz/test', Amount: createAmount }
+        : { Status: bankStatus, ...(statusAmount === undefined ? {} : { Amount: statusAmount }) };
       return { ok: true, status: 200, json: async () => ({ StatusCode: 0, Data }) };
     },
   });
@@ -75,7 +77,7 @@ it('isolates project payments and persists signed webhook retries and completed 
   const { db } = await import('../src/database.js');
   const readLedger = () => ({
     payments: db.prepare('SELECT * FROM payments').all(),
-    deliveries: db.prepare('SELECT * FROM webhook_deliveries').all(),
+    deliveries: db.prepare("SELECT * FROM webhook_deliveries WHERE status IN ('queued','retrying','sending')").all(),
   });
 
   t.after(async () => {
@@ -318,6 +320,11 @@ it('isolates project payments and persists signed webhook retries and completed 
   assert.equal(deliveries[0].options.headers['X-Webhook-ID'], deliveries[2].options.headers['X-Webhook-ID']);
   persisted = readLedger();
   assert.equal(persisted.deliveries.length, 0);
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE status='delivered'").get().n,
+    2,
+    'successful deliveries remain in the journal',
+  );
   await polling.pollOnce();
   assert.equal(deliveries.length, 4, 'completed deliveries must not be emitted again');
 
@@ -345,6 +352,11 @@ it('isolates project payments and persists signed webhook retries and completed 
   await polling.pollOnce();
   assert.equal(deliveries.length, beforeExhaustion + 3);
   assert.equal(readLedger().deliveries.length, 0, 'retry limit is enforced');
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE status='failed'").get().n,
+    1,
+    'exhausted deliveries remain available for manual retry',
+  );
 
   db.exec(
     "CREATE TRIGGER fail_payment_insert BEFORE INSERT ON payments BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END",
@@ -372,4 +384,66 @@ it('isolates project payments and persists signed webhook retries and completed 
     'payment.success',
     'one unreadable session must not block other pending payments',
   );
+
+  // Kaspi may return Amount:0 in a create response. The charge is still 290 KZT.
+  createAmount = 0;
+  hookStatus = 200;
+  for (const type of ['qr', 'invoice']) {
+    bankStatus = 'Wait';
+    statusAmount = 0;
+    const result = await (
+      await request(`/api/${type}/create`, shopKey, {
+        amount: '290.00',
+        orderId: `zero-placeholder-${type}`,
+        ...(type === 'invoice' ? { phoneNumber: '7000000001' } : {}),
+      })
+    ).json();
+    const paymentId = String(result.Data.QrOperationId);
+    assert.equal(result.Data.Amount, 0, 'raw bank response remains unchanged');
+    const submitted = JSON.parse(bankRequests.at(-1).options.body);
+    assert.equal(type === 'qr' ? submitted.PaymentAmount : submitted.Amount, 290);
+    const before = await (await request(`/api/payments?search=${paymentId}`, shopKey)).json();
+    const pending = before.payments.find((payment) => payment.paymentId === paymentId && payment.type === type);
+    assert.equal(pending.amount, 290, 'journal records the validated charge, not the zero placeholder');
+    bankStatus = 'Processed';
+    statusAmount = type === 'qr' ? 0 : 290;
+    await polling.pollOnce();
+    const after = await (await request(`/api/payments?search=${paymentId}`, shopKey)).json();
+    const paid = after.payments.find((payment) => payment.paymentId === paymentId && payment.type === type);
+    assert.equal(paid.result, 'paid');
+    assert.equal(paid.amount, 290);
+    const payload = deliveries
+      .map((delivery) => JSON.parse(delivery.options.body))
+      .find((delivery) => delivery.paymentId === paymentId && delivery.type === type);
+    assert.equal(payload.amount, 290, 'journal and webhook use the same amount');
+  }
+
+  // Pending records written by old versions can recover their zero from status.
+  for (const [paymentId, type, bankAmount, expected] of [
+    ['5101', 'qr', 290, 290],
+    ['5102', 'invoice', '290.005', 290.01],
+    ['5103', 'qr', 0, null],
+  ]) {
+    polling.trackPayment(
+      paymentId,
+      type,
+      { ...shopSession, projectId: 'shop' },
+      { amount: 0, orderId: `legacy-zero-${paymentId}` },
+      'shop',
+    );
+    statusAmount = bankAmount;
+    await polling.pollOnce();
+    const rows = await (await request(`/api/payments?search=${paymentId}`, shopKey)).json();
+    assert.equal(rows.payments[0].result, 'paid');
+    assert.equal(rows.payments[0].amount, expected);
+    const stored = db
+      .prepare('SELECT amount_json,meta_json FROM payments WHERE project_id=? AND type=? AND payment_id=?')
+      .get('shop', type, paymentId);
+    assert.equal(JSON.parse(stored.amount_json), expected);
+    assert.equal(JSON.parse(stored.meta_json).amount, expected);
+    const payload = deliveries
+      .map((delivery) => JSON.parse(delivery.options.body))
+      .find((delivery) => delivery.paymentId === paymentId && delivery.type === type);
+    assert.equal(payload.amount, expected);
+  }
 });

@@ -47,7 +47,7 @@ router.post('/create', requireActiveProject, requireAmount('amount'), async (req
           qrToken: d.QrToken,
           expireDate: d.ExpireDate,
           receiptUrl: d.ReceiptUrl,
-          amount: d.Amount ?? req.body.amount,
+          amount,
           orderId: req.body.orderId,
           pollingIntervals: {
             scanWaitTimeout: Number(opts.qrCodeScanWaitTimeout) || 180,

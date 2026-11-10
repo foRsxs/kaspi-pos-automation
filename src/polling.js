@@ -3,8 +3,7 @@ import fetch from 'node-fetch';
 import { KASPI_QRPAY_URL } from './config.js';
 import { signedQrPayHeaders } from './helpers.js';
 import { decryptSecret } from './crypto.js';
-import { getWebhooksByEvent } from './webhookStore.js';
-import { projectWebhooks } from './projects.js';
+import { resolvePaymentAmount } from './amount.js';
 import { logger } from './logger.js';
 import { markMerchantSessionInactive } from './merchantSession.js';
 
@@ -15,16 +14,19 @@ import {
   pendingEntries,
   updatePendingPayment,
   finishStoredPayment,
-  dueDeliveries,
-  removeDelivery,
-  retryDelivery,
   paymentSession,
 } from './paymentStore.js';
 export { listPayments } from './paymentStore.js';
+import {
+  webhooksForEvent,
+  matchingDeliveryHook,
+  dueDeliveries,
+  claimDelivery,
+  cancelDelivery,
+  completeDeliveryAttempt,
+} from './webhookDeliveryStore.js';
 
 const keyFor = (projectId, type, paymentId) => JSON.stringify([projectId, type, String(paymentId)]);
-const hooksFor = (projectId, event) =>
-  projectId === '__admin__' ? getWebhooksByEvent(event) : projectWebhooks(projectId, event);
 // Only initial writes that failed are retained temporarily, so an existing bank
 // operation can be recovered when storage becomes writable. History lives in SQLite.
 const failedPersistence = new Map();
@@ -137,7 +139,7 @@ const buildPayload = (event, entry, data) => ({
   type: entry.type,
   status: data.Status || entry.status,
   statusDesc: data.StatusDesc || '',
-  amount: entry.meta.amount ?? data.Amount ?? null,
+  amount: entry.meta.amount ?? null,
   orderId: entry.meta.orderId || null,
   qrToken: entry.meta.qrToken || null,
   receiptUrl: entry.meta.receiptUrl || data.ReceiptUrl || null,
@@ -147,8 +149,9 @@ const buildPayload = (event, entry, data) => ({
 });
 
 const finishPayment = (entry, event, data) => {
+  entry = { ...entry, meta: { ...entry.meta, amount: resolvePaymentAmount(entry.meta.amount, data.Amount) } };
   const payload = buildPayload(event, entry, data);
-  const deliveries = hooksFor(entry.projectId, event).map((hook) => ({
+  const deliveries = webhooksForEvent(entry.projectId, event).map((hook) => ({
     id: crypto.randomUUID(),
     projectId: entry.projectId,
     hookId: hook.id || null,
@@ -162,41 +165,48 @@ const finishPayment = (entry, event, data) => {
 };
 
 const processRetries = async () => {
-  for (const delivery of dueDeliveries(Date.now())) {
-    const hook = hooksFor(delivery.projectId, delivery.payload.event).find(
-      (candidate) => candidate.url === delivery.url && (!delivery.hookId || candidate.id === delivery.hookId),
-    );
-    let done = !hook;
-    if (hook) {
-      const body = JSON.stringify(delivery.payload);
-      const signature =
-        'sha256=' +
-        crypto
-          .createHmac('sha256', hook.secret || '')
-          .update(body)
-          .digest('hex');
-      try {
-        const response = await fetchWithTimeout(hook.url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Webhook-Signature': signature,
-            'X-Webhook-ID': delivery.id,
-          },
-          body,
-        });
-        // fetch resolves for HTTP 4xx/5xx: those responses still need a retry.
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        done = true;
-      } catch (err) {
-        logger.error('WEBHOOK', `Delivery ${delivery.id}, attempt ${delivery.attempt}: ${err.message}`);
-        done = delivery.attempt >= 3;
-        delivery.executeAfter = Date.now() + (delivery.attempt === 1 ? 5000 : 30000);
-        delivery.attempt++;
-      }
+  for (const pending of dueDeliveries(Date.now())) {
+    const hook = matchingDeliveryHook(pending);
+    if (!hook) {
+      cancelDelivery(pending.id);
+      continue;
     }
-    if (done) removeDelivery(delivery.id);
-    else retryDelivery(delivery);
+    const delivery = claimDelivery(pending.id);
+    if (!delivery) continue;
+    const body = JSON.stringify(delivery.payload);
+    const signature =
+      'sha256=' +
+      crypto
+        .createHmac('sha256', hook.secret || '')
+        .update(body)
+        .digest('hex');
+    const startedAt = Date.now();
+    let httpStatus = null;
+    let failure = null;
+    try {
+      const response = await fetchWithTimeout(hook.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Webhook-Signature': signature,
+          'X-Webhook-ID': delivery.id,
+        },
+        body,
+      });
+      httpStatus = response.status;
+      // No response body is retained: it can contain private data, HTML or secrets.
+      response.body?.destroy?.();
+      if (!response.ok) failure = `HTTP ${response.status}`;
+    } catch (err) {
+      failure = err.name === 'AbortError' ? 'Сайт не ответил за 10 секунд.' : String(err.message).slice(0, 1000);
+    }
+    completeDeliveryAttempt(delivery.id, delivery.number, {
+      httpStatus,
+      error: failure,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
+    if (failure) logger.error('WEBHOOK', `Delivery ${delivery.id}, attempt ${delivery.number}: ${failure}`);
+    else logger.info('WEBHOOK', `Delivery ${delivery.id}, attempt ${delivery.number}: HTTP ${httpStatus}`);
   }
 };
 
