@@ -21,6 +21,7 @@ last-session.json
 projects.json
 merchant-session.json
 payments-state.json
+server-secrets.json
 data/
 projects/
 *.json.tmp

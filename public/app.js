@@ -30,24 +30,25 @@ const getSession = () => {
   }
 };
 
-const sessionHeaders = () => {
-  const key = $('adminApiKey')?.value.trim() || sessionStorage.getItem('kaspi_admin_key');
-  return {
-    ...(key ? { Authorization: `Bearer ${key}` } : {}),
-    ...(selectedProject() ? { 'X-Project-ID': selectedProject() } : {}),
-  };
-};
+const sessionHeaders = () => (selectedProject() ? { 'X-Project-ID': selectedProject() } : {});
 
 const apiFetch = async (path, opts = {}) => {
   const projectId = selectedProject();
-  opts.headers = { ...sessionHeaders(), ...(opts.headers || {}) };
-  const resp = await fetch(API + path, opts);
-  const result = await resp.json().catch(() => ({}));
-  if (projectId !== selectedProject()) {
-    throw new Error('Проект переключён. Результат операции проверьте в исходном проекте.');
+  try {
+    const result = await window.adminRequest(API + path, {
+      ...opts,
+      headers: { ...sessionHeaders(), ...(opts.headers || {}) },
+    });
+    if (projectId !== selectedProject()) {
+      throw new Error('Проект переключён. Результат операции проверьте в исходном проекте.');
+    }
+    return result;
+  } catch (error) {
+    if (projectId !== selectedProject()) {
+      throw new Error('Проект переключён. Результат операции проверьте в исходном проекте.');
+    }
+    throw error;
   }
-  if (!resp.ok) throw new Error(result.error || `HTTP ${resp.status}`);
-  return result;
 };
 
 let authFlowGeneration = 0;
@@ -85,7 +86,7 @@ const switchProject = () => {
 };
 
 const connectServer = async () => {
-  if (!sessionStorage.getItem('kaspi_admin_key')) return showAuthMsg('Введите ключ администратора сервера', 'err');
+  if (!window.isAdminLoggedIn()) return showAuthMsg('Войдите в панель администратора', 'err');
   if (!selectedProject()) return showAuthMsg('Выберите проект и его счёт Kaspi Pay', 'err');
   const generation = authFlowProjectId === selectedProject() ? authFlowGeneration : null;
   const projectId = selectedProject();
@@ -134,40 +135,6 @@ const saveSession = (data, projectId = selectedProject()) => {
 
 const clearSession = (projectId = selectedProject()) => localStorage.removeItem(`kaspi_session:${projectId}`);
 
-const checkSession = async () => {
-  try {
-    const resp = await apiFetch('/api/session/check');
-    if (resp.active === true) return { active: true };
-    return { active: false, error: resp.error || 'Сессия неактивна' };
-  } catch {
-    return { active: false, error: 'Ошибка проверки сессии' };
-  }
-};
-
-const tryRestoreSession = async () => {
-  const projectId = selectedProject();
-  const session = getSession();
-  if (session.profileId && sessionStorage.getItem('kaspi_admin_key')) {
-    showMainScreen(session);
-    // Verify session is still active on the server
-    const result = await checkSession();
-    if (!result.active) {
-      clearSession(projectId);
-      $('mainScreen').classList.add('hidden');
-      $('bankWorkspace').classList.add('hidden');
-      $('projectDashboard').classList.remove('hidden');
-      if (typeof window.connectProject === 'function') {
-        await window.connectProject(projectId, { forceLogin: true });
-        showAuthMsg(result.error || 'Сессия истекла. Войдите заново.', 'err');
-      }
-      return false;
-    }
-    return true;
-  }
-  clearSession();
-  return false;
-};
-
 const formatPhone = (digits) => {
   // Format up to 10 digits as "XXX XXX XX XX"
   const d = digits.slice(0, 10);
@@ -186,9 +153,6 @@ const attachPhoneFormatter = (el) => {
 };
 
 window.addEventListener('DOMContentLoaded', async () => {
-  localStorage.removeItem('kaspi_session');
-  $('adminApiKey').value = sessionStorage.getItem('kaspi_admin_key') || '';
-  if (sessionStorage.getItem('kaspi_admin_key') && (await window.loadProjects())) await tryRestoreSession();
   attachPhoneFormatter($('phoneInput'));
   attachPhoneFormatter($('clientPhone'));
 });
@@ -227,9 +191,7 @@ const sendPhone = async () => {
   const generation = authFlowGeneration;
   if (!isCurrentAuthFlow(generation)) return;
   if (!selectedProject()) return showAuthMsg('Загрузите список и выберите проект', 'err');
-  const key = $('adminApiKey').value.trim();
-  if (!key) return showAuthMsg('Введите ключ администратора сервера', 'err');
-  sessionStorage.setItem('kaspi_admin_key', key);
+  if (!window.isAdminLoggedIn()) return showAuthMsg('Войдите в панель администратора', 'err');
   const phone = digitsOnly($('phoneInput').value);
   if (phone.length < 10) return showAuthMsg('Введите 10 цифр номера', 'err');
 

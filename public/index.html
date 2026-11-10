@@ -291,13 +291,68 @@
       <section id="adminLogin" class="admin-login card" aria-labelledby="adminLoginTitle">
         <div class="section-eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</div>
         <h2 id="adminLoginTitle">Вход администратора</h2>
-        <p class="muted">Введите ключ администратора, чтобы управлять проектами, доступами и вебхуками.</p>
-        <label for="adminApiKey">Ключ администратора сервера</label>
-        <input type="password" id="adminApiKey" autocomplete="current-password" placeholder="ADMIN_API_KEY" />
-        <div class="login-actions">
-          <button class="btn btn-primary" id="btnLoadProjects" onclick="loadProjects()">Войти в панель</button>
-        </div>
+        <p class="muted">Войдите, чтобы управлять проектами, банковскими подключениями и вебхуками.</p>
+        <form id="adminLoginForm" class="login-form">
+          <label for="adminUsername">Логин</label>
+          <input id="adminUsername" name="username" type="text" autocomplete="username" value="admin" readonly />
+          <label for="adminPassword">Пароль</label>
+          <input type="password" id="adminPassword" name="password" autocomplete="current-password" required />
+          <p class="field-hint">Временный пароль указан в логах контейнера после запуска сервера.</p>
+          <div class="login-actions">
+            <button class="btn btn-primary" id="btnAdminLogin" type="submit">Войти в панель</button>
+          </div>
+        </form>
         <div id="adminLoginMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+      </section>
+
+      <section
+        id="forcedPasswordScreen"
+        class="admin-password-gate hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="forcedPasswordTitle"
+        aria-describedby="forcedPasswordDescription"
+      >
+        <div class="admin-password-card card">
+          <div class="section-eyebrow">ЗАЩИТА УЧЁТНОЙ ЗАПИСИ</div>
+          <h2 id="forcedPasswordTitle">Задайте новый пароль</h2>
+          <p id="forcedPasswordDescription" class="muted">
+            Для продолжения замените временный пароль, указанный в логах контейнера.
+          </p>
+          <form id="forcedPasswordForm">
+            <label for="forcedCurrentPassword">Текущий временный пароль</label>
+            <input
+              id="forcedCurrentPassword"
+              name="currentPassword"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+            <label for="forcedNewPassword">Новый пароль</label>
+            <input
+              id="forcedNewPassword"
+              name="newPassword"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="128"
+              required
+            />
+            <label for="forcedConfirmPassword">Повторите новый пароль</label>
+            <input
+              id="forcedConfirmPassword"
+              name="confirmPassword"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="128"
+              required
+            />
+            <p class="field-hint">Используйте не менее 12 символов. Длина пароля — до 128 символов.</p>
+            <div id="forcedPasswordMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+            <button class="btn btn-primary" id="btnForcedPassword" type="submit">Сохранить новый пароль</button>
+          </form>
+        </div>
       </section>
 
       <main id="projectDashboard" class="hidden" aria-labelledby="dashboardTitle">
@@ -310,6 +365,9 @@
           <div class="dashboard-actions">
             <button class="btn btn-secondary" onclick="openPayments()">Платежи</button>
             <button class="btn btn-secondary" id="btnRefreshProjects" onclick="loadProjects()">Обновить</button>
+            <button class="btn btn-secondary" id="btnServerSettings" onclick="openServerSettings()">
+              Настройки сервера
+            </button>
             <button class="btn btn-primary" onclick="openProjectDialog()">Создать проект</button>
             <button class="btn btn-quiet" onclick="adminLogout()">Выйти</button>
           </div>
@@ -566,6 +624,153 @@
       </div>
     </dialog>
 
+    <dialog id="serverSettingsDialog" class="app-dialog server-settings-dialog" aria-labelledby="serverSettingsTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">АДМИНИСТРИРОВАНИЕ</div>
+            <h2 id="serverSettingsTitle">Настройки сервера</h2>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Закрыть настройки сервера"
+            onclick="closeServerSettings()"
+          >
+            ×
+          </button>
+        </div>
+        <div id="serverSettingsNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <section class="server-settings-section" aria-labelledby="adminAccountSettingsTitle">
+          <div class="server-settings-heading">
+            <div>
+              <h3 id="adminAccountSettingsTitle">Учётная запись</h3>
+              <p class="muted">Вход выполнен как <strong id="serverSettingsUsername">admin</strong>.</p>
+            </div>
+          </div>
+          <details id="passwordSettingsDetails" class="password-settings-details">
+            <summary>Изменить пароль</summary>
+            <form id="changeAdminPasswordForm" class="security-form">
+              <label for="settingsCurrentPassword">Текущий пароль</label>
+              <input
+                id="settingsCurrentPassword"
+                name="currentPassword"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+              <label for="settingsNewPassword">Новый пароль</label>
+              <input
+                id="settingsNewPassword"
+                name="newPassword"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                maxlength="128"
+                required
+              />
+              <label for="settingsConfirmPassword">Повторите новый пароль</label>
+              <input
+                id="settingsConfirmPassword"
+                name="confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                maxlength="128"
+                required
+              />
+              <p class="field-hint">Используйте не менее 12 символов. Длина пароля — до 128 символов.</p>
+              <div id="changeAdminPasswordMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+              <button class="btn btn-primary" id="btnChangeAdminPassword" type="submit">Изменить пароль</button>
+            </form>
+          </details>
+        </section>
+        <section class="server-settings-section" aria-labelledby="encryptionKeyTitle">
+          <div class="server-settings-heading">
+            <div>
+              <h3 id="encryptionKeyTitle">Ключ шифрования</h3>
+              <p class="muted">TOKEN_SECRET_KEY используется для защиты данных на сервере.</p>
+            </div>
+            <span id="encryptionKeyStatus" class="settings-status" role="status">Проверяем…</span>
+          </div>
+          <p id="encryptionKeyHelp" class="field-hint">
+            Сервер автоматически хранит TOKEN_SECRET_KEY в конфигурации. Значение скрыто. Его замена требует
+            перешифрования сохранённых данных.
+          </p>
+        </section>
+        <section class="server-settings-section" aria-labelledby="serverApiKeyTitle">
+          <div class="server-settings-heading">
+            <div>
+              <h3 id="serverApiKeyTitle">Ключ администратора API</h3>
+              <p id="serverApiKeyStatus" class="muted">Проверяем состояние ключа…</p>
+            </div>
+          </div>
+          <div class="server-key-controls">
+            <label for="serverApiKeyRevealPassword">Пароль для просмотра ключа</label>
+            <input id="serverApiKeyRevealPassword" type="password" autocomplete="current-password" required />
+            <div class="server-key-actions">
+              <button type="button" class="btn btn-secondary" id="btnRevealServerApiKey">Показать ключ</button>
+              <button type="button" class="btn btn-secondary" id="btnOpenRotateServerApiKey">Перевыпустить ключ</button>
+            </div>
+            <div id="serverApiKeyValueRow" class="server-api-key-value hidden">
+              <code id="serverApiKeyValue"></code>
+              <button type="button" class="btn btn-secondary" id="btnCopyServerApiKey">Копировать</button>
+            </div>
+          </div>
+          <p class="field-hint">
+            Перевыпуск немедленно отключит прежний ADMIN_API_KEY. Обновите все интеграции новым ключом.
+          </p>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeServerSettings()">Закрыть</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="rotateServerApiKeyDialog" class="app-dialog confirm-dialog" aria-labelledby="rotateServerApiKeyTitle">
+      <form id="rotateServerApiKeyForm" class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ПОДТВЕРЖДЕНИЕ</div>
+            <h2 id="rotateServerApiKeyTitle">Перевыпустить ключ администратора?</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть" onclick="closeRotateServerApiKey()">×</button>
+        </div>
+        <p class="muted">
+          Текущий ADMIN_API_KEY сразу перестанет работать. После подтверждения скопируйте новый ключ и обновите все
+          интеграции.
+        </p>
+        <label for="rotateServerApiKeyPassword">Текущий пароль администратора</label>
+        <input
+          id="rotateServerApiKeyPassword"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <label for="rotateServerApiKeyValue">Свой API-ключ (необязательно)</label>
+        <input
+          id="rotateServerApiKeyValue"
+          name="apiKey"
+          type="text"
+          autocomplete="off"
+          minlength="32"
+          maxlength="256"
+          spellcheck="false"
+        />
+        <p class="field-hint">Оставьте поле пустым, чтобы сервер сгенерировал ключ.</p>
+        <label class="server-key-confirmation">
+          <input id="confirmServerApiKeyRotation" type="checkbox" required />
+          <span>Я понимаю, что старый ключ перестанет работать сразу после перевыпуска.</span>
+        </label>
+        <div id="rotateServerApiKeyMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeRotateServerApiKey()">Отмена</button>
+          <button type="submit" class="btn btn-danger" id="btnRotateServerApiKey">Перевыпустить ключ</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="projectDialog" class="app-dialog" aria-labelledby="projectDialogTitle">
       <form id="projectForm" class="dialog-form">
         <div class="dialog-header">
@@ -756,6 +961,7 @@
       </div>
     </dialog>
 
+    <script src="security.js"></script>
     <script src="app.js"></script>
     <script src="admin.js"></script>
     <script src="payments.js"></script>

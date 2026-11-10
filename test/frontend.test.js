@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { it } from 'node:test';
 import { URLSearchParams } from 'node:url';
 
-const source = ['public/app.js', 'public/admin.js', 'public/payments.js']
+const source = ['public/security.js', 'public/app.js', 'public/admin.js', 'public/payments.js']
   .map((file) => fs.readFileSync(file, 'utf8'))
   .join('\n');
 
@@ -62,13 +62,15 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
   };
   const context = vm.createContext({
     document: { getElementById: element, createElement: () => element(`created-${created++}`) },
-    window: { addEventListener() {} },
+    window: { addEventListener() {}, dispatchEvent() {}, location: { href: 'http://localhost/' } },
     localStorage: storage(),
     sessionStorage: storage(),
     fetch: fetchImplementation,
     console,
     URL,
     URLSearchParams,
+    Headers: globalThis.Headers,
+    CustomEvent: globalThis.CustomEvent,
     setInterval: () => 1,
     clearInterval() {},
     setTimeout: () => 1,
@@ -76,6 +78,7 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
     confirm: () => assert.fail('Admin confirmation must use the HTML dialog'),
   });
   vm.runInContext(source, context);
+  vm.runInContext("securityState.authenticated = true; securityState.csrfToken = 'test-csrf-token';", context);
   return { context, element, run: (code) => vm.runInContext(code, context) };
 };
 
@@ -166,7 +169,6 @@ it('cancels a pending SMS initialization when the connection dialog closes', asy
       finish = resolve;
     });
   });
-  page.element('adminApiKey').value = 'demo-admin-key';
   page.run("adminState.projects = [{id:'shop',name:'Магазин',status:'active'}];");
   await page.run("connectProject('shop', {forceLogin:true})");
   page.element('phoneInput').value = '7000000001';
@@ -229,7 +231,6 @@ it('does not replace another project context when the post-login refresh arrives
         finish = resolve;
       }),
   );
-  page.element('adminApiKey').value = 'demo-admin-key';
   page.run("adminState.projects = [{id:'shop',name:'Магазин',status:'active'}];");
   await page.run("connectProject('shop', {forceLogin:true})");
   const pending = page.run("finishConnectFlow('shop', {orgName:'Demo'}, authFlowGeneration)");
@@ -278,7 +279,6 @@ it('requests server filters and the requested page without filtering returned ro
       }),
     };
   });
-  page.element('adminApiKey').value = 'demo-admin-key';
   page.element('paymentsProject').value = 'shop';
   page.element('paymentsStatus').value = 'paid';
   page.element('paymentsSearch').value = 'ORD-';
@@ -299,7 +299,6 @@ it('requests server filters and the requested page without filtering returned ro
 it('isolates payment-view requests from the bank workspace and ignores the previous project reply', async () => {
   const requests = [];
   const page = makePage((path, options) => new Promise((resolve) => requests.push({ path, options, resolve })));
-  page.element('adminApiKey').value = 'demo-admin-key';
   page.element('projectSelect').value = 'bank-workspace-project';
   page.element('paymentsProject').value = 'shop';
   page.element('paymentsStatus').value = 'all';
@@ -308,8 +307,8 @@ it('isolates payment-view requests from the bank workspace and ignores the previ
   page.element('paymentsProject').value = 'booking';
   const second = page.run('changePaymentsProject()');
   assert.equal(new URL(requests[0].path, 'http://localhost').pathname, '/api/payments');
-  assert.equal(requests[0].options.headers['X-Project-ID'], 'shop');
-  assert.equal(requests[1].options.headers['X-Project-ID'], 'booking');
+  assert.equal(requests[0].options.headers.get('X-Project-ID'), 'shop');
+  assert.equal(requests[1].options.headers.get('X-Project-ID'), 'booking');
   requests[1].resolve({
     ok: true,
     json: async () => ({
@@ -338,7 +337,6 @@ it('does not restore payment rows after their dialog was closed during refresh',
         finish = resolve;
       }),
   );
-  page.element('adminApiKey').value = 'demo-admin-key';
   page.element('paymentsProject').value = 'shop';
   page.element('paymentsStatus').value = 'all';
   page.element('paymentsDialog').open = true;
@@ -350,4 +348,30 @@ it('does not restore payment rows after their dialog was closed during refresh',
   assert.equal(page.run('paymentView.entries.length'), 0);
   assert.equal(page.element('paymentsRows').children.length, 0);
   assert.equal(page.run('paymentView.timer'), null);
+});
+
+it('uses cookie and CSRF for browser writes without sending an administrative Bearer key', async () => {
+  const requests = [];
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    return { ok: true, json: async () => ({}) };
+  });
+  await page.run("adminRequest('/api/projects', {method:'POST',headers:{Authorization:'Bearer old-key'},body:'{}'})");
+  assert.equal(requests[0].options.credentials, 'same-origin');
+  assert.equal(requests[0].options.headers.get('Authorization'), null);
+  assert.equal(requests[0].options.headers.get('X-CSRF-Token'), 'test-csrf-token');
+});
+
+it('rejects a late private response after the browser session changes', async () => {
+  let finish;
+  const page = makePage(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const pending = page.run("adminRequest('/api/projects')");
+  page.run("updateSecurityState({authenticated:false,csrfToken:''})");
+  finish({ ok: true, json: async () => ({ projects: [{ id: 'private-project' }] }) });
+  await assert.rejects(pending, /Сессия администратора изменилась/);
 });

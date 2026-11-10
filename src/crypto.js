@@ -4,6 +4,7 @@ import path from 'path';
 import { DATA_DIR } from './paths.js';
 import { ecKeyPair } from './config.js';
 import { getIdentity } from './identity.js';
+import { ENCRYPTION_KEY } from './serverSecrets.js';
 
 const ecdhFileFor = (projectId) => {
   const directory = projectId ? getIdentity(projectId).directory : DATA_DIR;
@@ -15,13 +16,6 @@ const ecdhFileFor = (projectId) => {
 const vtokenSuite = 'OCRA-1:HOTP-SHA256-6:QH64-T1M';
 
 // ─── AES-256-GCM encryption for vtokenSecret ───
-
-if (!/^[a-fA-F0-9]{64}$/.test(process.env.TOKEN_SECRET_KEY || '')) {
-  console.error('FATAL: TOKEN_SECRET_KEY must be exactly 64 hexadecimal characters.');
-  console.error('Generate a value with openssl rand -hex 32 and set TOKEN_SECRET_KEY in .env.');
-  process.exit(1);
-}
-const ENCRYPTION_KEY = Buffer.from(process.env.TOKEN_SECRET_KEY, 'hex');
 
 export const encryptSecret = (secretBuffer) => {
   const iv = crypto.randomBytes(12);

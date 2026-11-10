@@ -58,11 +58,15 @@ const assertStartupRejected = (result, message) => {
   assert.match(result.stderr, message);
 };
 
-test('startup rejects a missing admin API key', () => {
+test('startup generates and persists an admin API key when ENV is omitted', () => {
   const sandbox = createSandbox('[]');
   const result = importProjects(sandbox);
 
-  assertStartupRejected(result, /ADMIN_API_KEY должен содержать/);
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(path.join(sandbox.directory, 'data', 'server-secrets.json')));
+  const restarted = importProjects(sandbox);
+  assert.equal(restarted.status, 0, restarted.stderr);
 });
 
 test('startup rejects duplicate project API keys', () => {
