@@ -10,6 +10,19 @@ export const normalizeAmount = (input) => {
   return Number(minor) / 100;
 };
 
+// Prefer a positive amount from the status response, otherwise retain the known
+// charge amount. A legacy zero can only be recovered from bank evidence.
+export const resolvePaymentAmount = (recorded, bankAmount) => {
+  for (const candidate of [bankAmount, recorded]) {
+    try {
+      return normalizeAmount(candidate);
+    } catch {
+      // Zero, malformed and unknown amounts are not usable payment amounts.
+    }
+  }
+  return null;
+};
+
 export const requireAmount = (field) => (req, res, next) => {
   try {
     req.body[field] = normalizeAmount(req.body[field]);

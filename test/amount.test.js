@@ -1,6 +1,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAmount } from '../src/amount.js';
+import { normalizeAmount, resolvePaymentAmount } from '../src/amount.js';
 
 it('rounds all monetary inputs with decimal ROUND_HALF_UP to two places', () => {
   assert.equal(normalizeAmount('1.005'), 1.01);
@@ -8,6 +8,17 @@ it('rounds all monetary inputs with decimal ROUND_HALF_UP to two places', () => 
   assert.equal(normalizeAmount('0.005'), 0.01);
   assert.equal(normalizeAmount(999.994), 999.99);
   assert.equal(normalizeAmount('1200'), 1200);
+});
+
+it('resolves a recorded charge and bank amount without allowing zero placeholders to erase the charge', () => {
+  assert.equal(resolvePaymentAmount(290, 0), 290);
+  assert.equal(resolvePaymentAmount(0, 290), 290);
+  assert.equal(resolvePaymentAmount(undefined, '290.005'), 290.01);
+  assert.equal(resolvePaymentAmount(290, '291.005'), 291.01);
+  assert.equal(resolvePaymentAmount('290.005', null), 290.01);
+  assert.equal(resolvePaymentAmount(0, 0), null);
+  assert.equal(resolvePaymentAmount(null, undefined), null);
+  assert.equal(resolvePaymentAmount(-1, 'invalid'), null);
 });
 
 it('rejects zero, negative, malformed, nonfinite and excessive amounts', () => {

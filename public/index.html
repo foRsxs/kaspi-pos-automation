@@ -277,6 +277,7 @@
     </style>
     <link rel="stylesheet" href="admin.css" />
     <link rel="stylesheet" href="payments.css" />
+    <link rel="stylesheet" href="webhooks.css" />
   </head>
   <body>
     <div class="container">
@@ -364,6 +365,7 @@
           </div>
           <div class="dashboard-actions">
             <button class="btn btn-secondary" onclick="openPayments()">Платежи</button>
+            <button class="btn btn-secondary" onclick="openWebhooks()">Доставка вебхуков</button>
             <button class="btn btn-secondary" id="btnRefreshProjects" onclick="loadProjects()">Обновить</button>
             <button class="btn btn-secondary" id="btnServerSettings" onclick="openServerSettings()">
               Настройки сервера
@@ -961,9 +963,155 @@
       </div>
     </dialog>
 
+    <dialog id="webhooksDialog" class="app-dialog webhooks-dialog" aria-labelledby="webhooksDialogTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ЖУРНАЛ СЕРВЕРА</div>
+            <h2 id="webhooksDialogTitle">Доставка вебхуков</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть журнал вебхуков" onclick="closeWebhooks()">
+            ×
+          </button>
+        </div>
+        <p class="muted webhooks-intro">
+          Состояние доставки уведомлений выбранного проекта. Список обновляется каждые 10 секунд.
+        </p>
+        <div class="webhooks-filters">
+          <label>Проект<select id="webhooksProject" onchange="changeWebhooksProject()"></select></label>
+          <label
+            >Статус<select id="webhooksStatus" onchange="filterWebhooks()">
+              <option value="all">Все статусы</option>
+              <option value="queued">В очереди</option>
+              <option value="retrying">Повторная попытка</option>
+              <option value="sending">Отправляется</option>
+              <option value="delivered">Доставлен</option>
+              <option value="failed">Ошибка доставки</option>
+              <option value="cancelled">Отменён</option>
+            </select></label
+          >
+          <label
+            >Поиск<input
+              id="webhooksSearch"
+              type="search"
+              maxlength="120"
+              placeholder="Начало ID платежа или заказа"
+              oninput="searchWebhooks()"
+          /></label>
+          <button type="button" class="btn btn-secondary" id="btnRefreshWebhooks" onclick="loadWebhookRows()">
+            Обновить
+          </button>
+        </div>
+        <div id="webhooksNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <p id="webhooksSummary" class="muted webhooks-summary" role="status" aria-live="polite"></p>
+        <div class="webhooks-table-wrap">
+          <table class="webhooks-table">
+            <caption class="sr-only">
+              Доставки вебхуков выбранного проекта
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Создан</th>
+                <th scope="col">Платёж / заказ / событие</th>
+                <th scope="col">URL</th>
+                <th scope="col">Статус</th>
+                <th scope="col">Попытки</th>
+                <th scope="col">HTTP / ошибка</th>
+                <th scope="col">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="webhooksRows"></tbody>
+          </table>
+        </div>
+        <div id="webhooksEmpty" class="empty-state hidden"></div>
+        <div class="webhooks-pagination">
+          <span id="webhooksUpdated" class="muted"></span>
+          <div>
+            <button type="button" class="btn btn-secondary" id="btnWebhooksPrev" onclick="pageWebhooks(-1)">
+              Назад
+            </button>
+            <span id="webhooksPage"></span>
+            <button type="button" class="btn btn-secondary" id="btnWebhooksNext" onclick="pageWebhooks(1)">
+              Далее
+            </button>
+          </div>
+        </div>
+        <p class="muted webhooks-footnote">
+          HTTP 2xx означает, что сервер получателя принял запрос, но не подтверждает бизнес-обработку события. Повторная
+          доставка использует тот же X-Webhook-ID: обработчик получателя должен учитывать дубликаты. Старые доставки,
+          удалённые до включения журнала, здесь не восстанавливаются.
+        </p>
+      </div>
+    </dialog>
+
+    <dialog id="webhookDetailsDialog" class="app-dialog webhook-details-dialog" aria-labelledby="webhookDetailsTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ИСТОРИЯ ПОПЫТОК</div>
+            <h2 id="webhookDetailsTitle">Подробности доставки</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть подробности" onclick="closeWebhookDetails()">
+            ×
+          </button>
+        </div>
+        <div id="webhookDetailsNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <dl id="webhookDetailsSummary" class="webhook-details-summary"></dl>
+        <p id="webhookAttemptsHistoryNote" class="muted webhook-history-note hidden" role="note"></p>
+        <div class="webhook-attempts-wrap">
+          <table class="webhook-attempts-table">
+            <caption class="sr-only">
+              Попытки доставки выбранного вебхука
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">№</th>
+                <th scope="col">Начало</th>
+                <th scope="col">Завершение</th>
+                <th scope="col">Результат</th>
+                <th scope="col">HTTP</th>
+                <th scope="col">Длительность</th>
+                <th scope="col">Ошибка</th>
+              </tr>
+            </thead>
+            <tbody id="webhookAttemptsRows"></tbody>
+          </table>
+        </div>
+        <div id="webhookAttemptsEmpty" class="empty-state hidden">Для этой доставки попыток пока нет.</div>
+      </div>
+    </dialog>
+
+    <dialog id="webhookRetryDialog" class="app-dialog webhook-retry-dialog" aria-labelledby="webhookRetryTitle">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <div class="section-eyebrow">ПОВТОРНАЯ ДОСТАВКА</div>
+            <h2 id="webhookRetryTitle">Поставить доставку в очередь?</h2>
+          </div>
+          <button type="button" class="icon-button" aria-label="Закрыть подтверждение" onclick="closeWebhookRetry()">
+            ×
+          </button>
+        </div>
+        <p id="webhookRetryDescription" class="muted"></p>
+        <p class="muted webhook-retry-note">
+          Запрос не отправляется напрямую: доставка будет поставлена в очередь с прежним X-Webhook-ID. Получателю нужно
+          безопасно обработать повтор. Ответ HTTP 2xx подтверждает только приём запроса сервером получателя, а не
+          бизнес-обработку.
+        </p>
+        <div id="webhookRetryNotice" class="status-bar hidden" role="status" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeWebhookRetry()">Отмена</button>
+          <button type="button" class="btn btn-primary" id="btnConfirmWebhookRetry" onclick="runWebhookRetry()">
+            Поставить в очередь
+          </button>
+        </div>
+      </div>
+    </dialog>
+
     <script src="security.js"></script>
     <script src="app.js"></script>
     <script src="admin.js"></script>
     <script src="payments.js"></script>
+    <script src="webhooks.js"></script>
   </body>
 </html>

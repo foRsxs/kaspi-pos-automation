@@ -55,7 +55,7 @@ router.post('/create', requireActiveProject, requireAmount('amount'), async (req
           profileId: req.session.profileId,
         },
         {
-          amount: d.Amount ?? req.body.amount,
+          amount,
           orderId: req.body.orderId,
           clientMobile: d.ClientMobile,
           receiptUrl: d.ReceiptUrl,

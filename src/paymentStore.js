@@ -5,6 +5,7 @@ import { db, transaction } from './database.js';
 import { DATA_DIR } from './paths.js';
 import { readJson } from './storage.js';
 import { encryptSecret, decryptSecret } from './crypto.js';
+import { insertDelivery } from './webhookDeliveryStore.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS payments (
@@ -32,23 +33,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS payments_project_id_search_idx ON payments(project_id, payment_id COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS payments_project_order_search_idx ON payments(project_id, order_id COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS payments_pending_idx ON payments(event) WHERE event IS NULL;
-  CREATE TABLE IF NOT EXISTS webhook_deliveries (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    hook_id TEXT,
-    url TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    attempt INTEGER NOT NULL,
-    execute_after INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS deliveries_due_idx ON webhook_deliveries(execute_after);
 `);
 
 const insertPayment = db.prepare(`INSERT INTO payments
   (project_id,type,payment_id,status,event,amount_json,order_id,created_at,retry_count,meta_json,session_encrypted)
   VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-const insertDelivery = db.prepare(`INSERT INTO webhook_deliveries
-  (id,project_id,hook_id,url,payload_json,attempt,execute_after) VALUES (?,?,?,?,?,?,?)`);
 const paymentArgs = (entry) => [
   entry.projectId,
   entry.type,
@@ -62,16 +51,6 @@ const paymentArgs = (entry) => [
   JSON.stringify(entry.meta),
   !entry.event && entry.sessionHeaders ? encryptSecret(Buffer.from(JSON.stringify(entry.sessionHeaders))) : null,
 ];
-const deliveryArgs = (entry) => [
-  entry.id,
-  entry.projectId,
-  entry.hookId || null,
-  entry.url,
-  JSON.stringify(entry.payload),
-  entry.attempt,
-  entry.executeAfter,
-];
-
 // Validate before marking migration complete. A bad file must never silently become an empty ledger.
 const migrationError = () => {
   throw new Error('Некорректный журнал платежей JSON: миграция SQLite отменена');
@@ -162,7 +141,7 @@ if (!db.prepare('SELECT 1 FROM store_meta WHERE key = ?').get(MIGRATION_KEY)) {
     }
     for (const delivery of deliveries) {
       validateDelivery(delivery);
-      insertDelivery.run(...deliveryArgs(delivery));
+      insertDelivery(delivery);
     }
     db.prepare('INSERT INTO store_meta(key,value) VALUES (?,?)').run(MIGRATION_KEY, new Date().toISOString());
   });
@@ -225,50 +204,21 @@ export const finishStoredPayment = (entry, event, status, deliveries) =>
   transaction(() => {
     const changed = db
       .prepare(
-        `UPDATE payments SET status=?,event=?,session_encrypted=NULL
+        `UPDATE payments SET status=?,event=?,session_encrypted=NULL,amount_json=?,meta_json=?
     WHERE project_id=? AND type=? AND payment_id=? AND event IS NULL`,
       )
-      .run(status, event, entry.projectId, entry.type, entry.paymentId);
+      .run(
+        status,
+        event,
+        entry.meta.amount == null ? null : JSON.stringify(entry.meta.amount),
+        JSON.stringify(entry.meta),
+        entry.projectId,
+        entry.type,
+        entry.paymentId,
+      );
     if (!changed.changes) return;
-    for (const delivery of deliveries) insertDelivery.run(...deliveryArgs(delivery));
+    for (const delivery of deliveries) insertDelivery(delivery);
   });
-export const deliveriesUpperBound = () =>
-  db.prepare('SELECT coalesce(max(rowid),0) AS n FROM webhook_deliveries').get().n;
-export const dueDeliveryBatch = (after, upper, now) =>
-  db
-    .prepare(
-      `SELECT rowid,* FROM webhook_deliveries
-  WHERE execute_after <= ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 100`,
-    )
-    .all(now, after, upper)
-    .map((row) => ({
-      cursor: row.rowid,
-      id: row.id,
-      projectId: row.project_id,
-      hookId: row.hook_id,
-      url: row.url,
-      payload: JSON.parse(row.payload_json),
-      attempt: row.attempt,
-      executeAfter: row.execute_after,
-    }));
-export const removeDelivery = (id) => db.prepare('DELETE FROM webhook_deliveries WHERE id=?').run(id);
-export function* dueDeliveries(now) {
-  const upper = deliveriesUpperBound();
-  let after = 0;
-  while (true) {
-    const entries = dueDeliveryBatch(after, upper, now);
-    if (!entries.length) return;
-    for (const entry of entries) {
-      after = entry.cursor;
-      yield entry;
-    }
-  }
-}
-export const retryDelivery = (delivery) =>
-  db
-    .prepare('UPDATE webhook_deliveries SET attempt=?,execute_after=? WHERE id=?')
-    .run(delivery.attempt, delivery.executeAfter, delivery.id);
-
 const invalidQuery = (message) => {
   const error = new Error(message);
   error.status = 400;

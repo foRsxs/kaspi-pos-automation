@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { it } from 'node:test';
 import { URLSearchParams } from 'node:url';
 
-const source = ['public/security.js', 'public/app.js', 'public/admin.js', 'public/payments.js']
+const source = ['public/security.js', 'public/app.js', 'public/admin.js', 'public/payments.js', 'public/webhooks.js']
   .map((file) => fs.readFileSync(file, 'utf8'))
   .join('\n');
 
@@ -23,6 +23,9 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
         dataset: {},
         style: {},
         children: [],
+        get options() {
+          return this.children;
+        },
         append(...children) {
           this.children.push(...children);
         },
@@ -38,6 +41,9 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
           },
         },
         addEventListener() {},
+        setAttribute(name, value) {
+          this[name] = value;
+        },
         showModal() {
           this.open = true;
         },
@@ -45,6 +51,7 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
           this.open = false;
         },
         focus() {},
+        reset() {},
         replaceChildren(...children) {
           this.children = children;
         },
@@ -61,7 +68,11 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
     };
   };
   const context = vm.createContext({
-    document: { getElementById: element, createElement: () => element(`created-${created++}`) },
+    document: {
+      getElementById: element,
+      createElement: () => element(`created-${created++}`),
+      querySelectorAll: () => [],
+    },
     window: { addEventListener() {}, dispatchEvent() {}, location: { href: 'http://localhost/' } },
     localStorage: storage(),
     sessionStorage: storage(),
@@ -71,6 +82,12 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
     URLSearchParams,
     Headers: globalThis.Headers,
     CustomEvent: globalThis.CustomEvent,
+    Option: class {
+      constructor(text, value) {
+        this.textContent = text;
+        this.value = value;
+      }
+    },
     setInterval: () => 1,
     clearInterval() {},
     setTimeout: () => 1,
@@ -348,6 +365,220 @@ it('does not restore payment rows after their dialog was closed during refresh',
   assert.equal(page.run('paymentView.entries.length'), 0);
   assert.equal(page.element('paymentsRows').children.length, 0);
   assert.equal(page.run('paymentView.timer'), null);
+});
+
+it('loads webhook deliveries from the selected archived-capable project using server filters and page size 50', async () => {
+  const requests = [];
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    return {
+      ok: true,
+      json: async () => ({
+        deliveries: [
+          {
+            id: 'delivery-1',
+            projectId: 'shop',
+            paymentId: 'payment-8',
+            type: 'invoice',
+            orderId: 'ORDER-88',
+            event: 'payment.failed',
+            url: 'https://merchant.example/hook',
+            status: 'failed',
+            attempts: 3,
+            httpStatus: 503,
+            lastError: 'Service unavailable',
+            createdAt: '2026-11-10T10:00:00Z',
+            canRetry: false,
+            retryDisabledReason: 'Получатель больше не настроен',
+          },
+        ],
+        total: 62,
+        page: 2,
+        pageSize: 50,
+        summary: { total: 62, queued: 2, retrying: 1, sending: 1, delivered: 45, failed: 11, cancelled: 2 },
+      }),
+    };
+  });
+  page.element('webhooksProject').value = 'shop';
+  page.element('webhooksStatus').value = 'failed';
+  page.element('webhooksSearch').value = 'ORDER-88';
+  page.element('webhooksDialog').open = true;
+  page.run('webhookView.page = 2;');
+
+  await page.run('loadWebhookRows()');
+
+  const requestUrl = new URL(requests[0].path, 'http://localhost');
+  assert.equal(requestUrl.pathname, '/api/webhook-deliveries');
+  assert.equal(requestUrl.searchParams.get('page'), '2');
+  assert.equal(requestUrl.searchParams.get('pageSize'), '50');
+  assert.equal(requestUrl.searchParams.get('status'), 'failed');
+  assert.equal(requestUrl.searchParams.get('search'), 'ORDER-88');
+  assert.equal(requests[0].options.headers.get('X-Project-ID'), 'shop');
+  const row = page.element('webhooksRows').children[0];
+  assert.equal(row.children[2].textContent, 'https://merchant.example/hook');
+  assert.equal(row.children[5].children[0].textContent, 'HTTP 503');
+  assert.equal(row.children[6].children[1].disabled, true);
+  assert.equal(row.children[6].children[2].textContent, 'Получатель больше не настроен');
+  assert.equal(page.element('webhooksPage').textContent, '2 / 2');
+  assert.match(page.element('webhooksSummary').textContent, /Ошибки: 11/);
+});
+
+it('does not restore webhook deliveries after the journal closes during refresh', async () => {
+  let finish;
+  const page = makePage(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  page.element('webhooksProject').value = 'shop';
+  page.element('webhooksStatus').value = 'all';
+  page.element('webhooksDialog').open = true;
+  const pending = page.run('loadWebhookRows()');
+  page.run('closeWebhooks()');
+  finish({ ok: true, json: async () => ({ deliveries: [{ id: 'private-delivery' }], total: 1 }) });
+  await pending;
+  assert.equal(page.element('webhooksDialog').open, false);
+  assert.equal(page.run('webhookView.entries.length'), 0);
+  assert.equal(page.element('webhooksRows').children.length, 0);
+  assert.equal(page.run('webhookView.timer'), null);
+});
+
+it('loads archived webhook projects from the includeArchived project list', async () => {
+  const requests = [];
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/projects?includeArchived=true')
+      return {
+        ok: true,
+        json: async () => ({ projects: [{ id: 'old-shop', name: 'Старый магазин', status: 'archived' }] }),
+      };
+    return {
+      ok: true,
+      json: async () => ({ deliveries: [], total: 0, page: 1, summary: { total: 0 } }),
+    };
+  });
+
+  await page.run("openWebhooks('old-shop')");
+
+  assert.equal(requests[0].path, '/api/projects?includeArchived=true');
+  assert.equal(page.element('webhooksProject').value, 'old-shop');
+  assert.equal(requests[1].options.headers.get('X-Project-ID'), 'old-shop');
+  page.run('closeWebhooks()');
+});
+
+it('clears webhook journal data when the administrator session is logged out', () => {
+  const page = makePage();
+  page.element('webhooksDialog').open = true;
+  page.run("webhookView.entries = [{id:'private-delivery'}]; webhookView.total = 1;");
+
+  page.run("clearAdminSessionUI('Сессия завершена');");
+
+  assert.equal(page.element('webhooksDialog').open, false);
+  assert.equal(page.run('webhookView.entries.length'), 0);
+  assert.equal(page.element('webhooksRows').children.length, 0);
+  assert.equal(page.run('securityState.authenticated'), false);
+});
+
+it('loads scoped webhook attempt details, including delivery ID and nullable duration', async () => {
+  const requests = [];
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    return {
+      ok: true,
+      json: async () => ({
+        delivery: {
+          id: 'wh-42',
+          paymentId: 'pay-42',
+          orderId: 'order-42',
+          event: 'payment.failed',
+          url: 'https://merchant.example/hook',
+          status: 'failed',
+          attempts: 2,
+          createdAt: 1794300000000,
+          updatedAt: 1794300100000,
+        },
+        attempts: [
+          { number: 1, startedAt: 1794300000000, outcome: 'interrupted', durationMs: null, error: 'Worker restarted' },
+        ],
+      }),
+    };
+  });
+  page.element('webhooksProject').value = 'archived-shop';
+  page.element('webhooksDialog').open = true;
+
+  await page.run("openWebhookDetails('wh-42')");
+
+  assert.equal(requests[0].path, '/api/webhook-deliveries/wh-42');
+  assert.equal(requests[0].options.headers.get('X-Project-ID'), 'archived-shop');
+  assert.equal(page.element('webhookDetailsSummary').children[3].children[1].textContent, 'wh-42');
+  assert.equal(page.element('webhookDetailsSummary').children[4].children[1].textContent, '2');
+  const attempt = page.element('webhookAttemptsRows').children[0];
+  assert.equal(attempt.children[3].textContent, 'Прервано перезапуском');
+  assert.equal(attempt.children[5].textContent, '—');
+  assert.equal(
+    page.element('webhookAttemptsHistoryNote').textContent,
+    'Для 1 ранних попыток подробности недоступны: они выполнялись до обновления журнала.',
+  );
+  page.run('closeWebhookDetails()');
+  assert.equal(page.element('webhookAttemptsRows').children.length, 0);
+});
+
+it('cancels webhook retry without a request and sends a confirmed retry through adminRequest with CSRF', async () => {
+  const requests = [];
+  let finishRetry;
+  const page = makePage((path, options) => {
+    requests.push({ path, options });
+    if (path.includes('/retry'))
+      return new Promise((resolve) => {
+        finishRetry = resolve;
+      });
+    return Promise.resolve({
+      ok: true,
+      json: async () => ({ deliveries: [], total: 0, page: 1, summary: { total: 0 } }),
+    });
+  });
+  page.element('webhooksProject').value = 'shop';
+  page.element('webhooksDialog').open = true;
+
+  page.run(
+    "openWebhookRetry({id:'delivery-42',paymentId:'pay-42',orderId:'order-42',event:'payment.failed',url:'https://merchant.example/hook',canRetry:true})",
+  );
+  assert.equal(page.element('webhookRetryDialog').open, true);
+  assert.match(page.element('webhookRetryDescription').textContent, /payment\.failed/);
+  assert.match(page.element('webhookRetryDescription').textContent, /delivery-42/);
+  assert.match(page.element('webhookRetryDescription').textContent, /https:\/\/merchant\.example\/hook/);
+  page.run('closeWebhookRetry()');
+  assert.equal(requests.length, 0, 'cancel must not retry');
+
+  page.run(
+    "openWebhookRetry({id:'delivery-42',paymentId:'pay-42',orderId:'order-42',event:'payment.failed',url:'https://merchant.example/hook',canRetry:true})",
+  );
+  const first = page.run('runWebhookRetry()');
+  const second = page.run('runWebhookRetry()');
+  assert.equal(requests.length, 1, 'double click must create only one retry request');
+  assert.equal(requests[0].path, '/api/webhook-deliveries/delivery-42/retry');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(requests[0].options.headers.get('X-Project-ID'), 'shop');
+  assert.equal(requests[0].options.headers.get('X-CSRF-Token'), 'test-csrf-token');
+  assert.equal(requests[0].options.credentials, 'same-origin');
+  assert.equal(requests[0].options.headers.get('Authorization'), null);
+
+  finishRetry({ ok: true, status: 202, json: async () => ({ delivery: { id: 'delivery-42' } }) });
+  await Promise.all([first, second]);
+  assert.equal(requests.length, 2, 'a successful retry refreshes the list');
+  assert.equal(new URL(requests[1].path, 'http://localhost').pathname, '/api/webhook-deliveries');
+  assert.equal(page.element('webhookRetryDialog').open, false);
+  assert.equal(page.element('webhooksNotice').textContent, 'Повторная доставка поставлена в очередь.');
+});
+
+it('shows webhook delivery access on active and archived project cards', () => {
+  const page = makePage();
+  const active = page.run("buildProjectCard({id:'shop',name:'Магазин',status:'active'})");
+  const archived = page.run("buildProjectCard({id:'old-shop',name:'Старый магазин',status:'archived'}, true)");
+  const allText = (node) => [node.textContent, ...(node.children || []).map(allText)].join(' ');
+  assert.match(allText(active), /Доставка вебхуков/);
+  assert.match(allText(archived), /Доставка вебхуков/);
 });
 
 it('uses cookie and CSRF for browser writes without sending an administrative Bearer key', async () => {

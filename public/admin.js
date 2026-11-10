@@ -157,6 +157,7 @@ const buildProjectCard = (project, archived = false) => {
     actions.append(
       history,
       actionButton('Платежи', 'btn btn-secondary', () => window.openPayments(project.id)),
+      actionButton('Доставка вебхуков', 'btn btn-secondary', () => window.openWebhooks(project.id)),
     );
     card.append(actions);
     return card;
@@ -173,6 +174,7 @@ const buildProjectCard = (project, archived = false) => {
     ),
     actionButton('Настроить', 'btn btn-secondary', () => openProjectDialog(project)),
     actionButton('Платежи', 'btn btn-secondary', () => window.openPayments(project.id)),
+    actionButton('Доставка вебхуков', 'btn btn-secondary', () => window.openWebhooks(project.id)),
     actionButton(project.status === 'disabled' ? 'Включить' : 'Отключить', 'btn btn-secondary', () =>
       setProjectStatus(project),
     ),

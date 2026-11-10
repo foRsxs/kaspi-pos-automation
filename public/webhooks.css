@@ -1,0 +1,267 @@
+.webhooks-dialog {
+  width: min(1240px, calc(100vw - 28px));
+}
+
+.webhook-details-dialog,
+.webhook-retry-dialog {
+  width: min(760px, calc(100vw - 28px));
+}
+
+.webhooks-intro,
+.webhooks-footnote,
+.webhook-retry-note {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.webhooks-intro {
+  margin-bottom: 18px;
+}
+
+.webhooks-filters {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1.25fr auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.webhooks-filters label {
+  margin: 0;
+  font-size: 12px;
+}
+
+.webhooks-filters input,
+.webhooks-filters select {
+  margin: 6px 0 0;
+  padding: 10px;
+  font-size: 14px;
+}
+
+.webhooks-filters .btn {
+  width: auto;
+  margin: 0;
+  padding: 11px 15px;
+  font-size: 13px;
+}
+
+.webhooks-summary {
+  margin: 12px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.webhooks-table-wrap,
+.webhook-attempts-wrap {
+  max-height: clamp(170px, calc(88vh - 395px), 480px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.webhooks-table,
+.webhook-attempts-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+
+.webhooks-table {
+  min-width: 880px;
+}
+
+.webhooks-table th,
+.webhook-attempts-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f8fa;
+  color: #666c76;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.webhooks-table th,
+.webhooks-table td,
+.webhook-attempts-table th,
+.webhook-attempts-table td {
+  padding: 11px 12px;
+  vertical-align: top;
+}
+
+.webhooks-table td,
+.webhook-attempts-table td {
+  border-top: 1px solid var(--line);
+}
+
+.webhooks-table small,
+.webhook-attempts-table small {
+  display: block;
+  max-width: 260px;
+  margin-top: 4px;
+  color: #7d838d;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.webhook-url {
+  max-width: 210px;
+  overflow-wrap: anywhere;
+}
+
+.webhook-number {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.webhook-status {
+  display: inline-block;
+  padding: 4px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.webhook-queued,
+.webhook-retrying,
+.webhook-sending {
+  background: #eaf1ff;
+  color: #315fa3;
+}
+
+.webhook-delivered {
+  background: #e9f7ed;
+  color: #217a43;
+}
+
+.webhook-failed {
+  background: #fcebed;
+  color: #ad303b;
+}
+
+.webhook-cancelled,
+.webhook-unknown {
+  background: #f0f1f3;
+  color: #626771;
+}
+
+.webhook-row-actions {
+  min-width: 160px;
+}
+
+.webhook-action-button {
+  width: auto;
+  margin: 0 4px 4px 0;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.webhook-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.webhook-retry-reason {
+  max-width: 190px;
+  color: #73777f;
+  overflow-wrap: anywhere;
+}
+
+.webhooks-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.webhooks-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.webhooks-pagination .btn {
+  width: auto;
+  margin: 0;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+.webhooks-footnote {
+  margin-top: 18px;
+}
+
+.webhook-details-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  margin: 0 0 18px;
+}
+
+.webhook-detail-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(0, 1.3fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.webhook-detail-row dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.webhook-detail-row dd {
+  margin: 0;
+  text-align: right;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.webhook-break-word {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.webhook-attempts-wrap {
+  max-height: min(42vh, 360px);
+}
+
+.webhook-history-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.webhook-attempts-table {
+  min-width: 700px;
+}
+
+.webhook-retry-dialog .dialog-actions {
+  margin-top: 18px;
+}
+
+@media (max-width: 760px) {
+  .webhooks-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .webhooks-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .webhook-details-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .webhooks-filters {
+    grid-template-columns: 1fr;
+  }
+}

@@ -379,5 +379,9 @@ it('manages projects and webhooks immediately while preserving archived payment 
     return `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
   });
   assert.deepEqual([...archivedRetrySignatures].sort(), [...archivedExpectedSignatures].sort());
-  assert.equal(db.prepare('SELECT count(*) AS n FROM webhook_deliveries').get().n, 2);
+  assert.equal(
+    db.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE status IN ('queued','retrying')").get().n,
+    2,
+  );
+  assert.equal(db.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE status='cancelled'").get().n, 1);
 });
