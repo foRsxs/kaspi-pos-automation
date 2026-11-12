@@ -12,6 +12,8 @@ import {
 } from '../adminStore.js';
 import { ADMIN_COOKIE, sameOrigin, requireAdminSession, requireFullAdminSession } from '../adminAuth.js';
 import { encryptionKeySource } from '../serverSecrets.js';
+import { getNotificationSettings, updateNotificationSettings } from '../notificationStore.js';
+import { sendNotificationTest } from '../connectionNotifications.js';
 
 const router = Router();
 router.use((_req, res, next) => {
@@ -87,7 +89,16 @@ router.get('/settings', (_req, res) =>
     encryptionKeyConfigured: true,
     encryptionKeySource,
     apiKeyConfigured: true,
+    notifications: getNotificationSettings(),
   }),
+);
+router.patch(
+  '/settings/notifications',
+  asyncRoute(async (req, res) => res.json({ notifications: updateNotificationSettings(req.body) })),
+);
+router.post(
+  '/settings/notifications/test',
+  asyncRoute(async (_req, res) => res.json(await sendNotificationTest())),
 );
 router.post(
   '/api-key/reveal',

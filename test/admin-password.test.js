@@ -291,6 +291,19 @@ it('requires the initial password change and rotates the admin API key across re
     encryptionKeyConfigured: true,
     encryptionKeySource: 'file',
     apiKeyConfigured: true,
+    notifications: {
+      enabled: false,
+      email: '',
+      smtpHost: '',
+      smtpPort: 587,
+      smtpSecurity: 'starttls',
+      smtpUser: '',
+      smtpFrom: '',
+      hasSmtpPassword: false,
+      configured: false,
+      lastSentAt: null,
+      lastError: null,
+    },
   });
   assert.equal((await readJson(await request(baseUrl, '/api/projects', { bearer: initialApiKey }))).projects.length, 1);
   assert.equal((await request(baseUrl, '/api/payments', { bearer: projectApiKey })).status, 200);

@@ -700,6 +700,150 @@
             перешифрования сохранённых данных.
           </p>
         </section>
+        <section class="server-settings-section" aria-labelledby="connectionNotificationsTitle">
+          <div class="server-settings-heading">
+            <div>
+              <h3 id="connectionNotificationsTitle">Уведомления о подключении</h3>
+              <p class="muted">Получайте письма, если счёт Kaspi Pay нужно подключить заново.</p>
+            </div>
+            <span id="notificationsSetupStatus" class="settings-status" role="status">Проверяем…</span>
+          </div>
+          <p id="notificationsScopeHint" class="field-hint notifications-scope-hint">
+            Настройка действует для всех проектов. Сервер проверяет подключение раз в 5 минут и отправляет одно письмо
+            на каждый случай подтверждённой потери подключения. Сбой сети сам по себе не отправляет такое письмо.
+          </p>
+          <form
+            id="connectionNotificationsForm"
+            class="security-form connection-notifications-form"
+            onsubmit="saveConnectionNotifications(event)"
+          >
+            <div class="notification-switch-row">
+              <label class="notification-switch" for="notificationsEnabled">
+                <input
+                  id="notificationsEnabled"
+                  name="enabled"
+                  type="checkbox"
+                  role="switch"
+                  aria-describedby="notificationsScopeHint"
+                  onchange="updateConnectionNotificationControls()"
+                />
+                <span>Включить уведомления о потере подключения</span>
+              </label>
+              <span id="notificationsEnabledStatus" class="notification-enabled-state" role="status">
+                Уведомления выключены
+              </span>
+            </div>
+            <label for="notificationEmail">Email получателя</label>
+            <input
+              id="notificationEmail"
+              name="email"
+              type="email"
+              autocomplete="email"
+              placeholder="admin@example.com"
+              oninput="updateConnectionNotificationControls()"
+            />
+            <p class="field-hint">
+              Укажите один адрес. Включение возможно после заполнения параметров почтового сервера.
+            </p>
+
+            <details id="notificationSmtpDetails" class="password-settings-details notification-smtp-details">
+              <summary>Почтовый сервер</summary>
+              <div class="notification-smtp-fields">
+                <label for="smtpHost">SMTP-сервер</label>
+                <input
+                  id="smtpHost"
+                  name="smtpHost"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="smtp.example.com"
+                  oninput="updateConnectionNotificationControls()"
+                />
+
+                <div class="notification-smtp-row">
+                  <div>
+                    <label for="smtpPort">Порт</label>
+                    <input
+                      id="smtpPort"
+                      name="smtpPort"
+                      type="number"
+                      min="1"
+                      max="65535"
+                      step="1"
+                      value="587"
+                      inputmode="numeric"
+                      oninput="updateConnectionNotificationControls()"
+                    />
+                  </div>
+                  <div>
+                    <label for="smtpSecurity">Защита соединения</label>
+                    <select id="smtpSecurity" name="smtpSecurity" onchange="updateConnectionNotificationControls()">
+                      <option value="starttls">STARTTLS</option>
+                      <option value="tls">TLS</option>
+                    </select>
+                  </div>
+                </div>
+
+                <label for="smtpUser">Имя пользователя (необязательно)</label>
+                <input
+                  id="smtpUser"
+                  name="smtpUser"
+                  type="text"
+                  autocomplete="username"
+                  oninput="updateConnectionNotificationControls()"
+                />
+                <label for="smtpPassword">Пароль SMTP</label>
+                <input
+                  id="smtpPassword"
+                  name="smtpPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  aria-describedby="smtpPasswordHint"
+                  oninput="updateConnectionNotificationControls()"
+                />
+                <p id="smtpPasswordHint" class="field-hint">
+                  Пароль не показывается. Пустое поле сохраняет его, только если сервер и имя пользователя не менялись.
+                </p>
+
+                <label for="smtpFrom">Email отправителя</label>
+                <input
+                  id="smtpFrom"
+                  name="smtpFrom"
+                  type="email"
+                  autocomplete="email"
+                  placeholder="notifications@example.com"
+                  oninput="updateConnectionNotificationControls()"
+                />
+                <p class="field-hint">Если очистить имя пользователя, сохранённый пароль SMTP будет удалён.</p>
+              </div>
+            </details>
+
+            <div id="notificationsLastStatus" class="notification-last-status" aria-live="polite">
+              <p id="notificationsLastSentAt">Последнее письмо: не отправлялось</p>
+              <p id="notificationsLastError">Ошибок отправки нет.</p>
+            </div>
+            <div id="connectionNotificationsMsg" class="status-bar hidden" role="status" aria-live="polite"></div>
+            <div class="notification-actions">
+              <button type="submit" class="btn btn-primary" id="btnSaveConnectionNotifications" disabled>
+                Сохранить настройки
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                id="btnTestConnectionNotification"
+                aria-describedby="notificationTestHint"
+                title="Ответ SMTP о приёме письма не подтверждает доставку во входящие."
+                onclick="sendTestConnectionNotification()"
+                disabled
+              >
+                Отправить тестовое письмо
+              </button>
+            </div>
+            <p id="notificationTestHint" class="field-hint notification-test-hint">
+              Тест использует только сохранённые настройки. Приём письма почтовым сервером не гарантирует доставку во
+              входящие.
+            </p>
+          </form>
+        </section>
         <section class="server-settings-section" aria-labelledby="serverApiKeyTitle">
           <div class="server-settings-heading">
             <div>

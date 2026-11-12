@@ -16,6 +16,7 @@ const verifyKey = () => {
       ['projects', 'key_encrypted'],
       ['payments', 'session_encrypted'],
       ['server_admin', 'api_key_encrypted'],
+      ['notification_settings', 'smtp_password_encrypted'],
     ]) {
       if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) continue;
       const columns = db.prepare(`PRAGMA table_info(${table})`).all();

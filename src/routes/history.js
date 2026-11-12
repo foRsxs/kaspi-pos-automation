@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
-import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
+import { requestKaspi } from '../kaspiApi.js';
 import { requireSession } from '../merchantSession.js';
 
 const router = Router();
@@ -9,7 +9,7 @@ router.use(requireSession);
 
 // ─── Operations history (QR + remote) ───
 
-router.post('/operations', async (req, res) => {
+router.post('/operations', async (req, res, next) => {
   const { endDate, lastTransactionDate, statementPeriodCode } = req.body;
   if (!endDate) return res.status(400).json({ error: 'endDate required' });
   try {
@@ -19,21 +19,15 @@ router.post('/operations', async (req, res) => {
       LastTransactionDate: lastTransactionDate || '',
       StatementPeriodCode: statementPeriodCode ?? 0,
     });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
-      method: 'POST',
-      headers,
-      body: payload,
-    });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session, { method: 'POST', body: payload }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── Operation details ───
 
-router.post('/details', async (req, res) => {
+router.post('/details', async (req, res, next) => {
   const { id, operationMethod } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
   try {
@@ -42,15 +36,9 @@ router.post('/details', async (req, res) => {
       Id: Number(id),
       OperationMethod: operationMethod ?? 0,
     });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
-      method: 'POST',
-      headers,
-      body: payload,
-    });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session, { method: 'POST', body: payload }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 

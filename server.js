@@ -13,6 +13,8 @@ import adminRoutes from './src/routes/admin.js';
 import webhookDeliveryRoutes from './src/routes/webhookDeliveries.js';
 import { logInitialAdminPassword } from './src/adminStore.js';
 import { startPolling, stopPolling, listPayments } from './src/polling.js';
+import { startConnectionNotifications, stopConnectionNotifications } from './src/connectionNotifications.js';
+import { startConnectionMonitor, stopConnectionMonitor } from './src/connectionMonitor.js';
 import 'dotenv/config';
 
 const app = express();
@@ -44,12 +46,13 @@ app.use('/api/session', requireAdmin, sessionRoutes);
 
 app.use((err, _req, res, _next) => {
   const errorStatus = err.status ?? err.statusCode;
-  const status = [400, 401, 403, 404, 409, 413, 422, 429].includes(errorStatus) ? errorStatus : 500;
+  const status = [400, 401, 403, 404, 409, 413, 422, 429, 502, 503].includes(errorStatus) ? errorStatus : 500;
   if (status === 500) console.error('API error:', err.message);
   if (status === 429 && err.retryAfter) res.set('Retry-After', String(err.retryAfter));
   res.status(status).json({
     error: status === 500 ? 'Internal server error' : err.message,
-    ...(status < 500 && typeof err.code === 'string' ? { code: err.code } : {}),
+    ...(typeof err.active === 'boolean' ? { active: err.active } : {}),
+    ...(status !== 500 && typeof err.code === 'string' ? { code: err.code } : {}),
   });
 });
 
@@ -58,6 +61,8 @@ export const server = app.listen(PORT, '0.0.0.0', () => {
   logInitialAdminPassword();
 });
 startPolling();
+startConnectionNotifications();
+startConnectionMonitor();
 
 let stopping = false;
 const shutdown = async () => {
@@ -67,7 +72,7 @@ const shutdown = async () => {
   deadline.unref();
   server.close(async () => {
     try {
-      await stopPolling();
+      await Promise.all([stopPolling(), stopConnectionNotifications(), stopConnectionMonitor()]);
       clearTimeout(deadline);
     } catch (err) {
       console.error('Failed to save state during shutdown:', err.message);

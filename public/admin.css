@@ -908,6 +908,120 @@ input[type='checkbox'] {
   line-height: 1.5;
 }
 
+.notifications-scope-hint,
+.notification-test-hint {
+  display: block;
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.connection-notifications-form {
+  margin-top: 14px;
+}
+
+.notification-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 15px;
+}
+
+.notification-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notification-switch input {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.notification-enabled-state {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-notifications-form > label:not(.notification-switch),
+.notification-smtp-fields > label,
+.notification-smtp-row label {
+  margin-top: 11px;
+}
+
+.notification-smtp-details {
+  margin-top: 15px;
+}
+
+.notification-smtp-details > summary {
+  width: 100%;
+}
+
+.notification-smtp-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+
+.notification-smtp-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.75fr) minmax(0, 1.25fr);
+  gap: 12px;
+}
+
+.notification-smtp-row > div {
+  min-width: 0;
+}
+
+.notification-smtp-fields > .field-hint {
+  display: block;
+  margin-top: 5px;
+  line-height: 1.45;
+}
+
+.notification-last-status {
+  margin-top: 16px;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: #f5f6f8;
+  color: #5f646d;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.notification-last-status p + p {
+  margin-top: 4px;
+}
+
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 15px;
+}
+
+.connection-notifications-form .notification-actions .btn {
+  width: auto;
+  flex: 1 1 190px;
+  margin: 0;
+  padding: 10px 13px;
+  font-size: 13px;
+}
+
+.notification-test-hint {
+  margin-top: 8px;
+}
+
 .security-form {
   display: grid;
   grid-template-columns: 1fr;
@@ -1056,6 +1170,24 @@ input[type='checkbox'] {
   .server-api-key-value {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .notification-switch-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .notification-smtp-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .notification-actions {
+    flex-direction: column;
+  }
+
+  .connection-notifications-form .notification-actions .btn {
+    width: 100%;
   }
 
   .server-key-actions .btn,

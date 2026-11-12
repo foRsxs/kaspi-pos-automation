@@ -5,7 +5,7 @@ import { signedQrPayHeaders } from './helpers.js';
 import { decryptSecret } from './crypto.js';
 import { resolvePaymentAmount } from './amount.js';
 import { logger } from './logger.js';
-import { markMerchantSessionInactive } from './merchantSession.js';
+import { readKaspiResponse } from './kaspiApi.js';
 
 import {
   storePayment,
@@ -128,8 +128,7 @@ const fetchStatus = async (entry) => {
       : `remote/details?operationId=${encodeURIComponent(paymentId)}`;
   const url = `${KASPI_QRPAY_URL}/v02/${endpoint}`;
   const response = await fetchWithTimeout(url, { headers: signedQrPayHeaders(url, session) }, 15000);
-  if (!response.ok) throw new Error(`Kaspi HTTP ${response.status}`);
-  return response.json();
+  return readKaspiResponse(response, session);
 };
 
 const buildPayload = (event, entry, data) => ({
@@ -218,12 +217,11 @@ export const pollOnce = async () => {
     try {
       result = await fetchStatus(entry);
     } catch (err) {
+      if (err.code === 'KASPI_SESSION_EXPIRED') {
+        finishPayment(entry, 'payment.lost', { Status: 'SessionExpired', StatusDesc: 'Статус платежа неизвестен' });
+        continue;
+      }
       logger.warn('POLLING', `Payment ${entry.paymentId}: ${err.message}`);
-    }
-    if (result?.StatusCode === -101001) {
-      markMerchantSessionInactive(entry.projectId, entry.sessionHeaders.tokenSN);
-      finishPayment(entry, 'payment.lost', { Status: 'SessionExpired', StatusDesc: 'Статус платежа неизвестен' });
-      continue;
     }
     if (!result?.Data?.Status) {
       entry.retryCount++;

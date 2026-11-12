@@ -6,6 +6,16 @@ const securityState = {
   csrfToken: '',
   generation: 0,
 };
+let serverSettingsGeneration = 0;
+let serverSettingsLoadingGeneration = null;
+let notificationBusyGeneration = null;
+let notificationSettingsSnapshot = null;
+let notificationsLoadedGeneration = null;
+let notificationsConfigured = false;
+let hasSmtpPassword = false;
+let smtpCredentialBaseline = { host: '', user: '' };
+let notificationTestCooldownUntil = 0;
+let notificationTestCooldownTimer = null;
 
 window.securityState = securityState;
 
@@ -59,12 +69,10 @@ const adminRequest = async (path, options = {}) => {
     const error = new Error(result.error || `Ошибка запроса: HTTP ${response.status}`);
     error.status = response.status;
     error.code = result.code;
+    error.retryAfter = response.headers?.get?.('Retry-After') || '';
     const requestPath = new URL(path, window.location.href).pathname;
     const isSessionCheck = method === 'GET' && ['/api/admin/session', '/api/admin/settings'].includes(requestPath);
-    if (
-      response.status === 401 &&
-      (result.code === 'AUTH_SESSION_EXPIRED' || isSessionCheck || !requestPath.startsWith('/api/admin/'))
-    ) {
+    if (response.status === 401 && (result.code === 'AUTH_SESSION_EXPIRED' || isSessionCheck)) {
       window.dispatchEvent(new CustomEvent('admin:unauthorized'));
     }
     throw error;
@@ -207,24 +215,327 @@ const setSettingsStatus = (id, configured, detail = '') => {
   target.textContent = configured ? `Настроен${detail ? ` · ${detail}` : ''}` : 'Не настроен';
 };
 
-const loadServerSettings = async () => {
+const notificationValuesFromForm = () => ({
+  enabled: securityElement('notificationsEnabled').checked,
+  email: securityElement('notificationEmail').value.trim(),
+  smtpHost: securityElement('smtpHost').value.trim(),
+  smtpPort: securityElement('smtpPort').value.trim(),
+  smtpSecurity: securityElement('smtpSecurity').value || 'starttls',
+  smtpUser: securityElement('smtpUser').value,
+  smtpFrom: securityElement('smtpFrom').value.trim(),
+  smtpPassword: securityElement('smtpPassword').value,
+});
+
+const notificationValuesFromResponse = (notifications = {}) => ({
+  enabled: Boolean(notifications.enabled),
+  email: String(notifications.email || ''),
+  smtpHost: String(notifications.smtpHost || ''),
+  smtpPort: String(notifications.smtpPort ?? 587),
+  smtpSecurity: notifications.smtpSecurity === 'tls' ? 'tls' : 'starttls',
+  smtpUser: String(notifications.smtpUser || ''),
+  smtpFrom: String(notifications.smtpFrom || ''),
+  smtpPassword: '',
+});
+
+const isCurrentServerSettingsView = (generation) =>
+  generation === serverSettingsGeneration && securityElement('serverSettingsDialog').open && isAdminLoggedIn();
+
+const notificationFormIsDirty = () =>
+  !notificationSettingsSnapshot ||
+  JSON.stringify(notificationValuesFromForm()) !== JSON.stringify(notificationSettingsSnapshot);
+
+const notificationSettingsLoaded = () =>
+  notificationsLoadedGeneration === serverSettingsGeneration && notificationSettingsSnapshot !== null;
+
+const notificationTestCooldownSeconds = () =>
+  Math.max(0, Math.ceil((notificationTestCooldownUntil - Date.now()) / 1000));
+
+const scheduleNotificationTestCooldown = () => {
+  if (
+    notificationTestCooldownTimer !== null ||
+    notificationTestCooldownSeconds() === 0 ||
+    !securityElement('serverSettingsDialog').open
+  )
+    return;
+  notificationTestCooldownTimer = setInterval(() => {
+    if (!securityElement('serverSettingsDialog').open) {
+      clearInterval(notificationTestCooldownTimer);
+      notificationTestCooldownTimer = null;
+      return;
+    }
+    updateConnectionNotificationControls();
+    if (notificationTestCooldownSeconds() === 0) {
+      clearInterval(notificationTestCooldownTimer);
+      notificationTestCooldownTimer = null;
+    }
+  }, 1000);
+};
+
+const startNotificationTestCooldown = (seconds = 30) => {
+  const duration = Number(seconds);
+  const cooldownSeconds = Number.isFinite(duration) && duration > 0 ? Math.ceil(duration) : 30;
+  notificationTestCooldownUntil = Math.max(notificationTestCooldownUntil, Date.now() + cooldownSeconds * 1000);
+  scheduleNotificationTestCooldown();
+  if (securityElement('serverSettingsDialog').open) updateConnectionNotificationControls();
+};
+
+const updateNotificationSummary = (notifications = {}) => {
+  notificationsConfigured = Boolean(notifications.configured);
+  hasSmtpPassword = Boolean(notifications.hasSmtpPassword);
+  setSettingsStatus('notificationsSetupStatus', notificationsConfigured);
+  const lastSentAt = notifications.lastSentAt ? new Date(notifications.lastSentAt) : null;
+  securityElement('notificationsLastSentAt').textContent =
+    lastSentAt && !Number.isNaN(lastSentAt.getTime())
+      ? `Последнее письмо: ${lastSentAt.toLocaleString('ru')}`
+      : 'Последнее письмо: не отправлялось';
+  securityElement('notificationsLastError').textContent = notifications.lastError
+    ? `Последняя ошибка: ${String(notifications.lastError)}`
+    : 'Ошибок отправки нет.';
+};
+
+const updateConnectionNotificationControls = () => {
+  const loading = serverSettingsLoadingGeneration === serverSettingsGeneration;
+  const busy = notificationBusyGeneration === serverSettingsGeneration;
+  const loaded = notificationSettingsLoaded();
+  const disabled = loading || busy || !loaded;
+  for (const id of [
+    'notificationsEnabled',
+    'notificationEmail',
+    'smtpHost',
+    'smtpPort',
+    'smtpSecurity',
+    'smtpUser',
+    'smtpPassword',
+    'smtpFrom',
+  ]) {
+    securityElement(id).disabled = disabled;
+  }
+  const dirty = notificationFormIsDirty();
+  securityElement('btnSaveConnectionNotifications').disabled = disabled || !dirty;
+  const testButton = securityElement('btnTestConnectionNotification');
+  const cooldown = notificationTestCooldownSeconds();
+  testButton.disabled = disabled || dirty || !notificationsConfigured || cooldown > 0;
+  testButton.title =
+    cooldown > 0
+      ? `Повторное тестовое письмо будет доступно через ${cooldown} с.`
+      : dirty
+        ? 'Сначала сохраните изменения. Тестовое письмо использует сохранённые настройки.'
+        : 'Ответ SMTP о приёме письма не подтверждает доставку во входящие.';
+  securityElement('notificationTestHint').textContent =
+    cooldown > 0
+      ? `Следующее тестовое письмо можно отправить через ${cooldown} сек.`
+      : 'Тест использует только сохранённые настройки. Приём письма почтовым сервером не гарантирует доставку во входящие.';
+  securityElement('notificationsEnabledStatus').textContent = securityElement('notificationsEnabled').checked
+    ? 'Уведомления включены'
+    : 'Уведомления выключены';
+  const smtpIdentityChanged =
+    hasSmtpPassword &&
+    (securityElement('smtpHost').value.trim() !== smtpCredentialBaseline.host ||
+      securityElement('smtpUser').value !== smtpCredentialBaseline.user);
+  securityElement('smtpPasswordHint').textContent = hasSmtpPassword
+    ? smtpIdentityChanged
+      ? 'Смена SMTP-сервера или имени пользователя удалит сохранённый пароль. Введите новый пароль, если он нужен.'
+      : 'Сохранённый пароль есть. Оставьте поле пустым, чтобы сохранить его при неизменных сервере и имени пользователя.'
+    : securityElement('smtpUser').value
+      ? 'Для SMTP-аутентификации этому пользователю задайте пароль. Пароль не показывается.'
+      : 'Пароль не показывается. Заполните поле, чтобы задать пароль SMTP.';
+};
+
+const validateConnectionNotificationValues = (values) => {
+  const isEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if (values.email && !isEmail(values.email)) return 'Введите один корректный email получателя.';
+  if (values.smtpFrom && !isEmail(values.smtpFrom)) return 'Введите корректный email отправителя.';
+  if (
+    values.smtpPort &&
+    (!/^\d+$/.test(values.smtpPort) || Number(values.smtpPort) < 1 || Number(values.smtpPort) > 65535)
+  )
+    return 'Порт SMTP должен быть числом от 1 до 65535.';
+  if (values.enabled) {
+    if (!values.email) return 'Укажите email получателя.';
+    if (!values.smtpHost) return 'Укажите SMTP-сервер.';
+    if (!values.smtpPort) return 'Укажите порт SMTP.';
+    if (!values.smtpFrom) return 'Укажите email отправителя.';
+    const smtpIdentityChanged =
+      values.smtpHost !== smtpCredentialBaseline.host || values.smtpUser !== smtpCredentialBaseline.user;
+    if (values.smtpUser && !values.smtpPassword && (!hasSmtpPassword || smtpIdentityChanged))
+      return 'Для SMTP-аутентификации укажите пароль. После смены сервера или логина введите его заново.';
+  }
+  return '';
+};
+
+const applyConnectionNotificationSettings = (notifications = {}) => {
+  const values = notificationValuesFromResponse(notifications);
+  securityElement('notificationsEnabled').checked = values.enabled;
+  securityElement('notificationEmail').value = values.email;
+  securityElement('smtpHost').value = values.smtpHost;
+  securityElement('smtpPort').value = values.smtpPort;
+  securityElement('smtpSecurity').value = values.smtpSecurity;
+  securityElement('smtpUser').value = values.smtpUser;
+  securityElement('smtpPassword').value = '';
+  securityElement('smtpFrom').value = values.smtpFrom;
+  notificationSettingsSnapshot = values;
+  updateNotificationSummary(notifications);
+  smtpCredentialBaseline = { host: values.smtpHost.trim(), user: values.smtpUser };
+  notificationsLoadedGeneration = serverSettingsGeneration;
+  updateConnectionNotificationControls();
+};
+
+const loadServerSettings = async (generation) => {
   securityElement('serverSettingsUsername').textContent = 'admin';
   securityElement('encryptionKeyStatus').textContent = 'Проверяем…';
   securityElement('encryptionKeyStatus').className = 'settings-status';
   securityElement('serverApiKeyStatus').textContent = 'Проверяем состояние ключа…';
   showSecurityMessage('serverSettingsNotice', '');
+  showSecurityMessage('connectionNotificationsMsg', '');
   try {
     const settings = await adminRequest('/api/admin/settings');
+    if (!isCurrentServerSettingsView(generation)) return;
     const source = settings.encryptionKeySource === 'env' ? 'переменная окружения' : 'файл';
     setSettingsStatus('encryptionKeyStatus', Boolean(settings.encryptionKeyConfigured), source);
     securityElement('encryptionKeyHelp').textContent = settings.encryptionKeyConfigured
       ? `Сервер автоматически хранит TOKEN_SECRET_KEY в конфигурации (${source}). Значение скрыто. Замена требует перешифрования сохранённых данных.`
       : 'TOKEN_SECRET_KEY не настроен. Добавьте его в конфигурацию сервера. Значение нельзя посмотреть или изменить через панель.';
     setSettingsStatus('serverApiKeyStatus', Boolean(settings.apiKeyConfigured));
+    applyConnectionNotificationSettings(settings.notifications || {});
   } catch (error) {
-    showSecurityMessage('serverSettingsNotice', error.message, 'err');
-    securityElement('encryptionKeyStatus').textContent = 'Не удалось проверить';
-    securityElement('serverApiKeyStatus').textContent = 'Не удалось проверить состояние ключа';
+    if (isCurrentServerSettingsView(generation)) {
+      showSecurityMessage('serverSettingsNotice', error.message, 'err');
+      showSecurityMessage('connectionNotificationsMsg', error.message, 'err');
+      securityElement('encryptionKeyStatus').textContent = 'Не удалось проверить';
+      securityElement('serverApiKeyStatus').textContent = 'Не удалось проверить состояние ключа';
+    }
+  } finally {
+    if (serverSettingsLoadingGeneration === generation) {
+      serverSettingsLoadingGeneration = null;
+      updateConnectionNotificationControls();
+    }
+  }
+};
+
+const saveConnectionNotifications = async (event) => {
+  event?.preventDefault?.();
+  if (!isAdminLoggedIn()) return;
+  const generation = serverSettingsGeneration;
+  if (!isCurrentServerSettingsView(generation)) return;
+  if (!notificationSettingsLoaded()) {
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      'Не удалось загрузить сохранённые настройки. Закройте окно и откройте его снова.',
+      'err',
+    );
+    return;
+  }
+  const values = notificationValuesFromForm();
+  const validationMessage = validateConnectionNotificationValues(values);
+  if (validationMessage) {
+    showSecurityMessage('connectionNotificationsMsg', validationMessage, 'err');
+    return;
+  }
+  const dirty = notificationFormIsDirty();
+  if (!dirty) return;
+
+  notificationBusyGeneration = generation;
+  updateConnectionNotificationControls();
+  showSecurityMessage('connectionNotificationsMsg', 'Сохраняем настройки…');
+  const payload = {
+    enabled: values.enabled,
+    email: values.email,
+    smtpHost: values.smtpHost,
+    smtpPort: values.smtpPort ? Number(values.smtpPort) : 587,
+    smtpSecurity: values.smtpSecurity,
+    smtpUser: values.smtpUser,
+    smtpFrom: values.smtpFrom,
+    ...(values.smtpPassword ? { smtpPassword: values.smtpPassword } : {}),
+  };
+  try {
+    const result = await adminRequest('/api/admin/settings/notifications', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!isCurrentServerSettingsView(generation)) return;
+    applyConnectionNotificationSettings(result.notifications || {});
+    showSecurityMessage('connectionNotificationsMsg', 'Настройки уведомлений сохранены.', 'ok');
+  } catch (error) {
+    if (isCurrentServerSettingsView(generation))
+      showSecurityMessage('connectionNotificationsMsg', error.message, 'err');
+  } finally {
+    if (notificationBusyGeneration === generation) {
+      clearPasswordFields('smtpPassword');
+      notificationBusyGeneration = null;
+      updateConnectionNotificationControls();
+    }
+  }
+};
+
+const sendTestConnectionNotification = async () => {
+  if (!isAdminLoggedIn()) return;
+  const generation = serverSettingsGeneration;
+  if (!isCurrentServerSettingsView(generation)) return;
+  if (!notificationSettingsLoaded()) {
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      'Не удалось загрузить сохранённые настройки. Закройте окно и откройте его снова.',
+      'err',
+    );
+    return;
+  }
+  if (notificationTestCooldownSeconds() > 0) {
+    updateConnectionNotificationControls();
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      `Повторное тестовое письмо будет доступно через ${notificationTestCooldownSeconds()} сек.`,
+      'info',
+    );
+    return;
+  }
+  if (notificationFormIsDirty()) {
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      'Сначала сохраните изменения. Тест использует только сохранённые настройки.',
+      'err',
+    );
+    updateConnectionNotificationControls();
+    return;
+  }
+  if (!notificationsConfigured) {
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      'Сначала заполните и сохраните параметры почтового сервера.',
+      'err',
+    );
+    return;
+  }
+
+  notificationBusyGeneration = generation;
+  updateConnectionNotificationControls();
+  showSecurityMessage('connectionNotificationsMsg', 'Отправляем тестовое письмо…');
+  try {
+    const result = await adminRequest('/api/admin/settings/notifications/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    startNotificationTestCooldown(30);
+    if (!isCurrentServerSettingsView(generation)) return;
+    showSecurityMessage(
+      'connectionNotificationsMsg',
+      result.message || 'Тестовое письмо принято почтовым сервером.',
+      result.success ? 'ok' : 'err',
+    );
+    try {
+      const settings = await adminRequest('/api/admin/settings');
+      if (isCurrentServerSettingsView(generation)) updateNotificationSummary(settings.notifications || {});
+    } catch {}
+  } catch (error) {
+    if (error.status === 429) startNotificationTestCooldown(error.retryAfter || 30);
+    if (isCurrentServerSettingsView(generation))
+      showSecurityMessage('connectionNotificationsMsg', error.message, 'err');
+  } finally {
+    if (notificationBusyGeneration === generation) {
+      notificationBusyGeneration = null;
+      updateConnectionNotificationControls();
+    }
   }
 };
 
@@ -232,6 +543,41 @@ const clearServerApiKey = () => {
   securityElement('serverApiKeyValue').textContent = '';
   securityElement('serverApiKeyValueRow').classList.add('hidden');
   securityElement('btnCopyServerApiKey').textContent = 'Копировать';
+};
+
+const resetServerSettingsView = () => {
+  serverSettingsGeneration++;
+  serverSettingsLoadingGeneration = null;
+  notificationBusyGeneration = null;
+  notificationSettingsSnapshot = null;
+  notificationsLoadedGeneration = null;
+  notificationsConfigured = false;
+  hasSmtpPassword = false;
+  smtpCredentialBaseline = { host: '', user: '' };
+  clearPasswordFields('smtpPassword');
+  if (notificationTestCooldownTimer !== null) {
+    clearInterval(notificationTestCooldownTimer);
+    notificationTestCooldownTimer = null;
+  }
+  showSecurityMessage('connectionNotificationsMsg', '');
+  updateConnectionNotificationControls();
+};
+
+const bindServerSettingsClose = () => {
+  const dialog = securityElement('serverSettingsDialog');
+  if (dialog.dataset.settingsCloseBound) return;
+  dialog.addEventListener('close', () => {
+    securityElement('passwordSettingsDetails').open = false;
+    clearPasswordFields(
+      'settingsCurrentPassword',
+      'settingsNewPassword',
+      'settingsConfirmPassword',
+      'serverApiKeyRevealPassword',
+    );
+    clearServerApiKey();
+    resetServerSettingsView();
+  });
+  dialog.dataset.settingsCloseBound = 'true';
 };
 
 const showServerApiKey = (apiKey, message = '') => {
@@ -271,21 +617,35 @@ const revealServerApiKey = async () => {
 
 const openServerSettings = async () => {
   if (!isAdminLoggedIn()) return;
+  bindServerSettingsClose();
+  serverSettingsGeneration++;
+  const generation = serverSettingsGeneration;
+  serverSettingsLoadingGeneration = generation;
+  notificationBusyGeneration = null;
+  notificationSettingsSnapshot = null;
+  notificationsLoadedGeneration = null;
+  notificationsConfigured = false;
+  hasSmtpPassword = false;
   clearPasswordFields(
     'settingsCurrentPassword',
     'settingsNewPassword',
     'settingsConfirmPassword',
     'serverApiKeyRevealPassword',
+    'smtpPassword',
   );
   clearServerApiKey();
   securityElement('serverSettingsDialog').showModal();
-  await loadServerSettings();
+  scheduleNotificationTestCooldown();
+  updateConnectionNotificationControls();
+  await loadServerSettings(generation);
 };
 
 const closeServerSettings = () => {
   const rotateDialog = securityElement('rotateServerApiKeyDialog');
   if (rotateDialog.open) rotateDialog.close();
-  securityElement('serverSettingsDialog').close();
+  const dialog = securityElement('serverSettingsDialog');
+  if (dialog.open) dialog.close();
+  else resetServerSettingsView();
 };
 
 const openRotateServerApiKey = () => {
@@ -379,6 +739,7 @@ const clearAdminSessionUI = (message = '') => {
     'serverApiKeyRevealPassword',
     'rotateServerApiKeyPassword',
     'rotateServerApiKeyValue',
+    'smtpPassword',
   );
   clearServerApiKey();
   sessionStorage.removeItem('kaspi_admin_key');
@@ -401,6 +762,9 @@ window.adminRequest = adminRequest;
 window.isAdminLoggedIn = isAdminLoggedIn;
 window.openServerSettings = openServerSettings;
 window.closeServerSettings = closeServerSettings;
+window.saveConnectionNotifications = saveConnectionNotifications;
+window.sendTestConnectionNotification = sendTestConnectionNotification;
+window.updateConnectionNotificationControls = updateConnectionNotificationControls;
 window.openRotateServerApiKey = openRotateServerApiKey;
 window.closeRotateServerApiKey = closeRotateServerApiKey;
 window.adminLogout = adminLogout;
@@ -420,16 +784,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   securityElement('btnRevealServerApiKey').addEventListener('click', revealServerApiKey);
   securityElement('btnOpenRotateServerApiKey').addEventListener('click', openRotateServerApiKey);
   securityElement('btnCopyServerApiKey').addEventListener('click', copyServerApiKey);
-  securityElement('serverSettingsDialog').addEventListener('close', () => {
-    securityElement('passwordSettingsDetails').open = false;
-    clearPasswordFields(
-      'settingsCurrentPassword',
-      'settingsNewPassword',
-      'settingsConfirmPassword',
-      'serverApiKeyRevealPassword',
-    );
-    clearServerApiKey();
-  });
   securityElement('rotateServerApiKeyDialog').addEventListener('close', () => {
     clearPasswordFields('rotateServerApiKeyPassword');
     securityElement('rotateServerApiKeyValue').value = '';

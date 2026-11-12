@@ -11,14 +11,33 @@ const source = ['public/security.js', 'public/app.js', 'public/admin.js', 'publi
 const makePage = (fetchImplementation = async () => ({ ok: true, json: async () => ({}) })) => {
   const elements = new Map();
   let created = 0;
+  const alerts = [];
+  const makeEventTarget = () => {
+    const listeners = new Map();
+    return {
+      addEventListener(type, listener) {
+        const handlers = listeners.get(type) || [];
+        handlers.push(listener);
+        listeners.set(type, handlers);
+      },
+      dispatchEvent(event) {
+        for (const listener of listeners.get(event.type) || []) listener(event);
+        return true;
+      },
+    };
+  };
   const element = (id) => {
     if (!elements.has(id)) {
       const classes = new Set();
       if (['bankWorkspace', 'mainScreen'].includes(id)) classes.add('hidden');
+      const target = makeEventTarget();
       elements.set(id, {
+        ...target,
+        tagName: id.toLowerCase().endsWith('dialog') ? 'DIALOG' : 'DIV',
         value: '',
         textContent: '',
         disabled: false,
+        checked: false,
         open: false,
         dataset: {},
         style: {},
@@ -28,6 +47,9 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
         },
         append(...children) {
           this.children.push(...children);
+        },
+        add(child) {
+          this.children.push(child);
         },
         classList: {
           add: (name) => classes.add(name),
@@ -40,7 +62,6 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
             return enabled;
           },
         },
-        addEventListener() {},
         setAttribute(name, value) {
           this[name] = value;
         },
@@ -49,6 +70,7 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
         },
         close() {
           this.open = false;
+          this.dispatchEvent({ type: 'close' });
         },
         focus() {},
         reset() {},
@@ -67,16 +89,23 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
       removeItem: (key) => data.delete(key),
     };
   };
+  const document = {
+    getElementById: element,
+    createElement: () => element(`created-${created++}`),
+    querySelectorAll: (selector) =>
+      selector === 'dialog[open]'
+        ? [...elements.values()].filter((item) => item.tagName === 'DIALOG' && item.open)
+        : [],
+  };
+  Object.assign(document, makeEventTarget());
+  const window = Object.assign(makeEventTarget(), { location: { href: 'http://localhost/' } });
   const context = vm.createContext({
-    document: {
-      getElementById: element,
-      createElement: () => element(`created-${created++}`),
-      querySelectorAll: () => [],
-    },
-    window: { addEventListener() {}, dispatchEvent() {}, location: { href: 'http://localhost/' } },
+    document,
+    window,
     localStorage: storage(),
     sessionStorage: storage(),
     fetch: fetchImplementation,
+    alert: (message) => alerts.push(message),
     console,
     URL,
     URLSearchParams,
@@ -96,8 +125,28 @@ const makePage = (fetchImplementation = async () => ({ ok: true, json: async () 
   });
   vm.runInContext(source, context);
   vm.runInContext("securityState.authenticated = true; securityState.csrfToken = 'test-csrf-token';", context);
-  return { context, element, run: (code) => vm.runInContext(code, context) };
+  return { context, document, window, element, alerts, run: (code) => vm.runInContext(code, context) };
 };
+
+const serverSettingsResponse = (notifications = {}) => ({
+  encryptionKeyConfigured: true,
+  encryptionKeySource: 'file',
+  apiKeyConfigured: true,
+  notifications: {
+    enabled: false,
+    email: '',
+    smtpHost: '',
+    smtpPort: 587,
+    smtpSecurity: 'starttls',
+    smtpUser: '',
+    smtpFrom: '',
+    hasSmtpPassword: false,
+    configured: false,
+    lastSentAt: null,
+    lastError: null,
+    ...notifications,
+  },
+});
 
 it('keeps only the selected payment tab visible when project status is refreshed', () => {
   const page = makePage();
@@ -138,6 +187,224 @@ it('ignores an in-flight bank response after the user changes the selected accou
   page.element('projectSelect').value = 'booking';
   finish({ ok: true, json: async () => ({ Data: { Status: 'Processed' } }) });
   await assert.rejects(pending, /Проект переключён/);
+});
+
+it('does not expire the administrator cookie for a generic bank 401', async () => {
+  const page = makePage(async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: 'Kaspi request rejected', code: 'BANK_REQUEST_REJECTED' }),
+  }));
+  page.element('projectSelect').value = 'shop';
+
+  await assert.rejects(page.run("apiFetch('/api/invoice/details?operationId=1')"), /Kaspi request rejected/);
+  assert.equal(page.run('securityState.authenticated'), true);
+});
+
+it('does not apply a late Kaspi session expiry to a newly selected project', async () => {
+  let finish;
+  const page = makePage(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  page.element('projectSelect').value = 'shop';
+  page.run(`
+    adminState.projects = [
+      {id:'shop',name:'Магазин',status:'active',connection:{connected:true}},
+      {id:'booking',name:'Бронирование',status:'active',connection:{connected:true}}
+    ];
+    localStorage.setItem('kaspi_session:shop', JSON.stringify({profileId:11}));
+    localStorage.setItem('kaspi_session:booking', JSON.stringify({profileId:22}));
+  `);
+  const pending = page.run("apiFetch('/api/session/check')");
+  page.element('projectSelect').value = 'booking';
+  finish({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: 'Сессия Kaspi истекла', code: 'KASPI_SESSION_EXPIRED' }),
+  });
+
+  await assert.rejects(pending, /Проект переключён/);
+  assert.equal(page.run("JSON.parse(localStorage.getItem('kaspi_session:shop')).profileId"), 11);
+  assert.equal(page.run("JSON.parse(localStorage.getItem('kaspi_session:booking')).profileId"), 22);
+  assert.equal(page.run('adminState.projects.every((project)=>project.connection.connected)'), true);
+});
+
+it('still clears administrator UI for explicit cookie expiry and administrator session checks', async () => {
+  const page = makePage(async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: 'Сессия администратора завершена.', code: 'AUTH_SESSION_EXPIRED' }),
+  }));
+  page.run("adminState.projects = [{id:'shop',name:'Магазин',status:'active'}];");
+
+  await assert.rejects(page.run("adminRequest('/api/invoice/create')"), /Сессия администратора завершена/);
+  assert.equal(page.run('securityState.authenticated'), false);
+  assert.equal(page.run('adminState.projects.length'), 0);
+
+  page.run("updateSecurityState({authenticated:true,csrfToken:'test-csrf-token'});");
+  await assert.rejects(page.run("adminRequest('/api/admin/session')"), /Сессия администратора завершена/);
+  assert.equal(page.run('securityState.authenticated'), false);
+});
+
+it('handles a lost Kaspi session by preserving the admin cookie and opening SMS reconnection for that project', async () => {
+  const page = makePage(async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({
+      active: false,
+      error: 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.',
+      code: 'KASPI_SESSION_EXPIRED',
+    }),
+  }));
+  page.element('projectSelect').value = 'shop';
+  page.run(`
+    adminState.projects = [
+      {id:'shop',name:'Магазин',status:'active',connection:{connected:true,orgName:'Demo'}},
+      {id:'booking',name:'Бронирование',status:'active',connection:{connected:true,orgName:'Other'}}
+    ];
+    localStorage.setItem('kaspi_session:shop', JSON.stringify({profileId:11}));
+    localStorage.setItem('kaspi_session:booking', JSON.stringify({profileId:22}));
+    adminState.editId = 'shop';
+  `);
+  page.element('projectDialog').open = true;
+  page.run('invoicePollingTimer=1; qrPollingTimer=2; qrCountdownTimer=3;');
+
+  await page.run("connectProject('shop')");
+
+  assert.equal(page.run('securityState.authenticated'), true);
+  assert.equal(page.run("localStorage.getItem('kaspi_session:shop')"), null);
+  assert.equal(page.run("JSON.parse(localStorage.getItem('kaspi_session:booking')).profileId"), 22);
+  assert.equal(page.run("adminState.projects.find((project)=>project.id==='shop').connection.connected"), false);
+  assert.equal(page.element('projectConnectionStatus').textContent, 'Счёт Kaspi Pay ещё не подключён.');
+  assert.equal(page.element('connectDialog').open, true);
+  assert.equal(page.element('authMsg').textContent, 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.');
+  assert.equal(page.run('[invoicePollingTimer,qrPollingTimer,qrCountdownTimer].every((timer)=>timer===null)'), true);
+  assert.equal(page.element('projectSelect').value, 'shop');
+});
+
+it('does not add a blocking alert after opening SMS reconnection for a lost-session payment request', async () => {
+  const page = makePage(async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({
+      error: 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.',
+      code: 'KASPI_SESSION_EXPIRED',
+    }),
+  }));
+  page.element('projectSelect').value = 'shop';
+  page.element('clientPhone').value = '7000000001';
+  page.element('invoiceAmount').value = '100';
+  page.element('qrAmount').value = '100';
+  page.run("adminState.projects = [{id:'shop',name:'Магазин',status:'active',connection:{connected:true}}];");
+
+  await page.run('createInvoice()');
+  await page.run('createQr()');
+
+  assert.deepEqual(page.alerts, []);
+  assert.equal(page.element('connectDialog').open, true);
+  assert.equal(page.element('authMsg').textContent, 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.');
+});
+
+it('marks an archived project disconnected without offering SMS reconnection', async () => {
+  const page = makePage(async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({
+      error: 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.',
+      code: 'KASPI_SESSION_EXPIRED',
+    }),
+  }));
+  page.run(`
+    adminState.projects = [{id:'old-shop',name:'Старый магазин',status:'archived',connection:{connected:true}}];
+    localStorage.setItem('kaspi_session:old-shop', JSON.stringify({profileId:11}));
+  `);
+
+  await page.run(
+    "connectArchivedHistory({id:'old-shop',name:'Старый магазин',status:'archived',connection:{connected:true}})",
+  );
+
+  assert.equal(page.run('securityState.authenticated'), true);
+  assert.equal(page.run("localStorage.getItem('kaspi_session:old-shop')"), null);
+  assert.equal(page.run('adminState.projects[0].connection.connected'), false);
+  assert.equal(page.element('connectDialog').open, false);
+  assert.match(page.element('selectedProjectStatus').textContent, /Архивный проект нельзя переподключить по SMS/);
+  assert.doesNotMatch(page.element('selectedProjectStatus').textContent, /Подключите счёт заново по SMS/);
+});
+
+it('keeps the project connected when Kaspi is unavailable and shows a retry-safe status message', async () => {
+  let unavailable = true;
+  const page = makePage(async () => {
+    if (unavailable) {
+      unavailable = false;
+      return {
+        ok: false,
+        status: 503,
+        json: async () => ({ error: 'temporary upstream error', code: 'KASPI_UNAVAILABLE' }),
+      };
+    }
+    return { ok: true, json: async () => ({ active: true }) };
+  });
+  page.element('projectSelect').value = 'shop';
+  page.run(`
+    adminState.projects = [{id:'shop',name:'Магазин',status:'active',connection:{connected:true,orgName:'Demo'}}];
+    localStorage.setItem('kaspi_session:shop', JSON.stringify({profileId:11}));
+  `);
+
+  await assert.rejects(
+    page.run("apiFetch('/api/invoice/create')"),
+    /Kaspi Pay временно недоступен\. Проверьте статус операции перед повтором\./,
+  );
+  assert.equal(page.run('securityState.authenticated'), true);
+  assert.equal(page.run('adminState.projects[0].connection.connected'), true);
+  assert.equal(page.run("JSON.parse(localStorage.getItem('kaspi_session:shop')).profileId"), 11);
+  assert.equal(
+    page.element('selectedProjectStatus').textContent,
+    'Kaspi Pay временно недоступен. Проверьте статус операции перед повтором.',
+  );
+  await page.run("apiFetch('/api/session/check')");
+  assert.equal(page.element('selectedProjectStatus').classList.contains('hidden'), true);
+});
+
+it('does not invalidate a renewed Kaspi session when an older same-project request returns 401', async () => {
+  let finishBankRequest;
+  const page = makePage((path) => {
+    if (path.startsWith('/api/invoice/details'))
+      return new Promise((resolve) => {
+        finishBankRequest = resolve;
+      });
+    return Promise.resolve({
+      ok: true,
+      json: async () => ({
+        projects: [{ id: 'shop', name: 'Магазин', status: 'active', connection: { connected: true } }],
+      }),
+    });
+  });
+  page.element('projectSelect').value = 'shop';
+  page.run(`
+    adminState.projects = [{id:'shop',name:'Магазин',status:'active',connection:{connected:true}}];
+    localStorage.setItem('kaspi_session:shop', JSON.stringify({profileId:11}));
+  `);
+  const pending = page.run("apiFetch('/api/invoice/details?operationId=1')");
+
+  await page.run("connectProject('shop', {forceLogin:true,returnTo:'workspace'})");
+  page.run('completeAuthFlow({profileId:22}, authFlowGeneration);');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  finishBankRequest({
+    ok: false,
+    status: 401,
+    json: async () => ({
+      active: false,
+      error: 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.',
+      code: 'KASPI_SESSION_EXPIRED',
+    }),
+  });
+  await assert.rejects(pending, /Подключение к Kaspi Pay изменилось/);
+  assert.equal(page.run('adminState.projects[0].connection.connected'), true);
+  assert.equal(page.run("JSON.parse(localStorage.getItem('kaspi_session:shop')).profileId"), 22);
 });
 
 it('requests explicit HTML confirmation before rotating an API key and cancels without a request', async () => {
@@ -591,6 +858,267 @@ it('uses cookie and CSRF for browser writes without sending an administrative Be
   assert.equal(requests[0].options.credentials, 'same-origin');
   assert.equal(requests[0].options.headers.get('Authorization'), null);
   assert.equal(requests[0].options.headers.get('X-CSRF-Token'), 'test-csrf-token');
+});
+
+it('loads notification settings without exposing the SMTP password and displays safe server status', async () => {
+  const page = makePage(async () => ({
+    ok: true,
+    json: async () =>
+      serverSettingsResponse({
+        enabled: true,
+        email: 'ops@example.com',
+        smtpHost: 'smtp.example.com',
+        smtpPort: 587,
+        smtpSecurity: 'tls',
+        smtpUser: 'ops-user',
+        smtpFrom: 'notifications@example.com',
+        hasSmtpPassword: true,
+        configured: true,
+        lastSentAt: '2026-11-11T02:00:00.000Z',
+        lastError: '<img src=x onerror=alert(1)>',
+      }),
+  }));
+
+  await page.run('openServerSettings()');
+
+  assert.equal(page.element('notificationsEnabled').checked, true);
+  assert.equal(page.element('notificationEmail').value, 'ops@example.com');
+  assert.equal(page.element('smtpHost').value, 'smtp.example.com');
+  assert.equal(page.element('smtpPort').value, '587');
+  assert.equal(page.element('smtpSecurity').value, 'tls');
+  assert.equal(page.element('smtpUser').value, 'ops-user');
+  assert.equal(page.element('smtpFrom').value, 'notifications@example.com');
+  assert.equal(page.element('smtpPassword').value, '');
+  assert.match(page.element('smtpPasswordHint').textContent, /Сохранённый пароль есть/);
+  assert.equal(page.element('notificationsSetupStatus').textContent, 'Настроен');
+  assert.match(page.element('notificationsLastSentAt').textContent, /2026/);
+  assert.equal(page.element('notificationsLastError').textContent, 'Последняя ошибка: <img src=x onerror=alert(1)>');
+  page.element('smtpHost').value = 'smtp.other.example';
+  page.run('updateConnectionNotificationControls()');
+  assert.match(page.element('smtpPasswordHint').textContent, /Смена SMTP-сервера/);
+  assert.equal(page.element('btnTestConnectionNotification').disabled, true);
+  page.element('smtpHost').value = 'smtp.example.com';
+  page.run('updateConnectionNotificationControls()');
+  assert.equal(page.element('btnTestConnectionNotification').disabled, false);
+});
+
+it('saves notification settings through the cookie and CSRF path without auto-sending a test email', async () => {
+  const requests = [];
+  const stored = {
+    email: 'ops@example.com',
+    smtpHost: 'smtp.example.com',
+    smtpPort: 587,
+    smtpSecurity: 'starttls',
+    smtpUser: 'ops-user',
+    smtpFrom: 'notifications@example.com',
+    hasSmtpPassword: true,
+    configured: true,
+  };
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/admin/settings') return { ok: true, json: async () => serverSettingsResponse(stored) };
+    if (path === '/api/admin/settings/notifications')
+      return {
+        ok: true,
+        json: async () =>
+          serverSettingsResponse({
+            ...stored,
+            enabled: true,
+            email: 'new@example.com',
+            smtpHost: 'smtp.other.example',
+            smtpUser: '',
+            hasSmtpPassword: false,
+          }),
+      };
+    assert.fail(`Unexpected request: ${path}`);
+  });
+
+  await page.run('openServerSettings()');
+  page.element('smtpHost').value = 'smtp.other.example';
+  page.element('notificationsEnabled').checked = true;
+  page.run('updateConnectionNotificationControls()');
+  await page.run('saveConnectionNotifications({preventDefault(){}})');
+  assert.equal(requests.length, 1, 'enabling after changing SMTP identity requires a new password');
+  assert.match(page.element('connectionNotificationsMsg').textContent, /укажите пароль/);
+
+  page.element('smtpUser').value = '';
+  page.element('notificationEmail').value = 'new@example.com';
+  page.run('updateConnectionNotificationControls()');
+  assert.equal(page.element('btnTestConnectionNotification').disabled, true);
+  await page.run('sendTestConnectionNotification()');
+  assert.equal(requests.length, 1, 'unsaved edits must not send a test email');
+  assert.match(page.element('connectionNotificationsMsg').textContent, /Сначала сохраните изменения/);
+
+  await page.run('saveConnectionNotifications({preventDefault(){}})');
+
+  assert.equal(requests.length, 2, 'save must not trigger the test endpoint');
+  assert.equal(requests[1].path, '/api/admin/settings/notifications');
+  assert.equal(requests[1].options.method, 'PATCH');
+  assert.equal(requests[1].options.credentials, 'same-origin');
+  assert.equal(requests[1].options.headers.get('X-CSRF-Token'), 'test-csrf-token');
+  const payload = JSON.parse(requests[1].options.body);
+  assert.equal(payload.enabled, true, 'an SMTP relay without authentication can be enabled');
+  assert.equal(payload.email, 'new@example.com');
+  assert.equal(payload.smtpHost, 'smtp.other.example');
+  assert.equal(payload.smtpPort, 587);
+  assert.equal(payload.smtpUser, '', 'an empty SMTP user is sent to clear saved credentials');
+  assert.equal(Object.hasOwn(payload, 'smtpPassword'), false, 'blank password keeps the server copy');
+  assert.equal(page.element('smtpPassword').value, '');
+  assert.equal(page.element('btnSaveConnectionNotifications').disabled, true);
+});
+
+it('keeps notification controls blocked when settings fail to load', async () => {
+  const requests = [];
+  const page = makePage(async (path) => {
+    requests.push(path);
+    return {
+      ok: false,
+      status: 503,
+      json: async () => ({ error: 'Настройки временно недоступны.' }),
+    };
+  });
+
+  await page.run('openServerSettings()');
+
+  assert.equal(page.element('notificationsEnabled').disabled, true);
+  assert.equal(page.element('btnSaveConnectionNotifications').disabled, true);
+  assert.equal(page.element('btnTestConnectionNotification').disabled, true);
+  await page.run('saveConnectionNotifications({preventDefault(){}})');
+  await page.run('sendTestConnectionNotification()');
+  assert.deepEqual(requests, ['/api/admin/settings'], 'failed loading must not save or send using an empty form');
+  assert.match(page.element('connectionNotificationsMsg').textContent, /Не удалось загрузить сохранённые настройки/);
+});
+
+it('tests saved SMTP settings even when notifications are disabled and refreshes server delivery status', async () => {
+  const requests = [];
+  let settingsReads = 0;
+  const page = makePage(async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/admin/settings') {
+      settingsReads++;
+      return {
+        ok: true,
+        json: async () =>
+          serverSettingsResponse({
+            enabled: false,
+            email: 'ops@example.com',
+            smtpHost: 'smtp.example.com',
+            smtpPort: 587,
+            smtpSecurity: 'starttls',
+            smtpFrom: 'notifications@example.com',
+            configured: true,
+            lastSentAt: settingsReads > 1 ? '2026-11-11T02:05:00.000Z' : null,
+            lastError: settingsReads > 1 ? '<smtp error>' : null,
+          }),
+      };
+    }
+    if (path === '/api/admin/settings/notifications/test')
+      return {
+        ok: true,
+        json: async () => ({ success: true, message: 'Тестовое письмо принято почтовым сервером.' }),
+      };
+    assert.fail(`Unexpected request: ${path}`);
+  });
+
+  await page.run('openServerSettings()');
+  assert.equal(page.element('notificationsEnabled').checked, false);
+  assert.equal(page.element('btnTestConnectionNotification').disabled, false);
+  await page.run('sendTestConnectionNotification()');
+
+  assert.deepEqual(
+    requests.map(({ path }) => path),
+    ['/api/admin/settings', '/api/admin/settings/notifications/test', '/api/admin/settings'],
+  );
+  const testRequest = requests[1];
+  assert.equal(testRequest.options.method, 'POST');
+  assert.equal(testRequest.options.credentials, 'same-origin');
+  assert.equal(testRequest.options.headers.get('X-CSRF-Token'), 'test-csrf-token');
+  assert.deepEqual(JSON.parse(testRequest.options.body), {});
+  assert.equal(page.element('connectionNotificationsMsg').textContent, 'Тестовое письмо принято почтовым сервером.');
+  assert.match(page.element('notificationsLastSentAt').textContent, /2026/);
+  assert.equal(page.element('notificationsLastError').textContent, 'Последняя ошибка: <smtp error>');
+  assert.equal(page.element('btnTestConnectionNotification').disabled, true, 'successful test starts cooldown');
+  await page.run('sendTestConnectionNotification()');
+  assert.equal(
+    requests.filter(({ path }) => path === '/api/admin/settings/notifications/test').length,
+    1,
+    'a second test request during cooldown is blocked in the handler',
+  );
+  assert.match(page.element('connectionNotificationsMsg').textContent, /доступно через/);
+});
+
+it('ignores stale notification settings responses after closing and reopening server settings', async () => {
+  const pendingReads = [];
+  const page = makePage(
+    () =>
+      new Promise((resolve) => {
+        pendingReads.push(resolve);
+      }),
+  );
+
+  const firstOpen = page.run('openServerSettings()');
+  page.element('smtpPassword').value = 'discard-on-close';
+  page.run('closeServerSettings()');
+  assert.equal(page.element('smtpPassword').value, '');
+
+  const secondOpen = page.run('openServerSettings()');
+  pendingReads[0]({
+    ok: true,
+    json: async () => serverSettingsResponse({ email: 'old@example.com' }),
+  });
+  await firstOpen;
+  assert.equal(page.element('notificationEmail').value, '', 'the closed view response must be ignored');
+
+  pendingReads[1]({
+    ok: true,
+    json: async () => serverSettingsResponse({ email: 'current@example.com' }),
+  });
+  await secondOpen;
+  assert.equal(page.element('notificationEmail').value, 'current@example.com');
+
+  page.element('smtpPassword').value = 'clear-on-logout';
+  page.run("clearAdminSessionUI('Сессия завершена');");
+  assert.equal(page.element('smtpPassword').value, '');
+});
+
+it('does not let a late notification save overwrite a reopened settings view or clear its new password', async () => {
+  let finishSave;
+  let settingsRead = 0;
+  const page = makePage((path) => {
+    if (path === '/api/admin/settings') {
+      settingsRead++;
+      const email = settingsRead === 1 ? 'initial@example.com' : 'reopened@example.com';
+      return Promise.resolve({
+        ok: true,
+        json: async () => serverSettingsResponse({ email }),
+      });
+    }
+    if (path === '/api/admin/settings/notifications')
+      return new Promise((resolve) => {
+        finishSave = resolve;
+      });
+    assert.fail(`Unexpected request: ${path}`);
+  });
+
+  await page.run('openServerSettings()');
+  page.element('notificationEmail').value = 'pending-save@example.com';
+  page.element('smtpPassword').value = 'old-view-password';
+  const pendingSave = page.run('saveConnectionNotifications({preventDefault(){}})');
+  page.run('closeServerSettings()');
+  assert.equal(page.element('smtpPassword').value, '');
+  await page.run('openServerSettings()');
+  page.element('smtpPassword').value = 'new-view-password';
+
+  finishSave({
+    ok: true,
+    json: async () =>
+      serverSettingsResponse({ email: 'pending-save@example.com', hasSmtpPassword: true, configured: true }),
+  });
+  await pendingSave;
+
+  assert.equal(page.element('notificationEmail').value, 'reopened@example.com');
+  assert.equal(page.element('smtpPassword').value, 'new-view-password');
+  assert.equal(page.element('serverSettingsDialog').open, true);
 });
 
 it('rejects a late private response after the browser session changes', async () => {

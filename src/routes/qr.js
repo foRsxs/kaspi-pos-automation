@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
-import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
+import { requestKaspi } from '../kaspiApi.js';
 import { requireSession } from '../merchantSession.js';
 import { trackPayment, requirePayment } from '../polling.js';
 
@@ -13,7 +13,7 @@ router.use(requireSession);
 
 // ─── Create QR token ───
 
-router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res) => {
+router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res, next) => {
   const { amount, latitude, longitude } = req.body;
 
   try {
@@ -24,13 +24,10 @@ router.post('/create', requireActiveProject, requireAmount('amount'), async (req
       Latitude: latitude || 43.204643483375889,
       Longitude: longitude || 76.891962364115912,
     });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
+    const kaspiResponse = await requestKaspi(url, req.session, {
       method: 'POST',
-      headers,
       body: payload,
     });
-    const kaspiResponse = await resp.json();
     const d = kaspiResponse.Data;
     if (d && d.QrOperationId) {
       const opts = d.QrPaymentBehaviorOptions || {};
@@ -67,21 +64,20 @@ router.post('/create', requireActiveProject, requireAmount('amount'), async (req
     }
     res.json(kaspiResponse);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── QR payment status ───
 
-router.get('/status', requirePayment('qr', 'qrOperationId'), async (req, res) => {
+router.get('/status', requirePayment('qr', 'qrOperationId'), async (req, res, next) => {
   const { qrOperationId } = req.query;
 
   try {
     const url = `${KASPI_QRPAY_URL}/v02/kaspi-qr/status?qrOperationId=${qrOperationId}`;
-    const resp = await loggedFetch(url, { headers: signedQrPayHeaders(url, req.session) });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 

@@ -16,6 +16,8 @@ const $ = (id) => document.getElementById(id);
 const digitsOnly = (str) => str.replace(/\D/g, '');
 const selectedProject = () => $('projectSelect')?.value || sessionStorage.getItem('kaspi_project_id') || '';
 const sessionKey = () => `kaspi_session:${selectedProject()}`;
+const KASPI_SESSION_EXPIRED_MESSAGE = 'Подключение к Kaspi Pay потеряно. Подключите счёт заново по SMS.';
+const KASPI_UNAVAILABLE_MESSAGE = 'Kaspi Pay временно недоступен. Проверьте статус операции перед повтором.';
 const escapeHtml = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -34,6 +36,7 @@ const sessionHeaders = () => (selectedProject() ? { 'X-Project-ID': selectedProj
 
 const apiFetch = async (path, opts = {}) => {
   const projectId = selectedProject();
+  const requestAuthGeneration = authFlowGeneration;
   try {
     const result = await window.adminRequest(API + path, {
       ...opts,
@@ -42,10 +45,26 @@ const apiFetch = async (path, opts = {}) => {
     if (projectId !== selectedProject()) {
       throw new Error('Проект переключён. Результат операции проверьте в исходном проекте.');
     }
+    window.clearBankNotice?.(projectId);
     return result;
   } catch (error) {
     if (projectId !== selectedProject()) {
       throw new Error('Проект переключён. Результат операции проверьте в исходном проекте.');
+    }
+    if (error.code === 'KASPI_SESSION_EXPIRED') {
+      if (requestAuthGeneration !== authFlowGeneration) {
+        throw Object.assign(
+          new Error('Подключение к Kaspi Pay изменилось. Проверьте статус операции перед повтором.'),
+          {
+            code: 'KASPI_SESSION_CHANGED',
+          },
+        );
+      }
+      error.message ||= KASPI_SESSION_EXPIRED_MESSAGE;
+      await window.handleKaspiSessionExpired?.(projectId, error.message);
+    } else if (error.code === 'KASPI_UNAVAILABLE') {
+      error.message = KASPI_UNAVAILABLE_MESSAGE;
+      window.showBankUnavailable?.(projectId, error.message);
     }
     throw error;
   }
@@ -104,6 +123,7 @@ const connectServer = async () => {
       showAuthMsg(resp.error || 'Сессия неактивна. Войдите по SMS.', 'info');
     }
   } catch (err) {
+    if (err.code === 'KASPI_SESSION_EXPIRED') return;
     if (generation !== null && !isCurrentAuthFlow(generation)) return;
     showAuthMsg(err.message, 'err');
   }
@@ -434,7 +454,7 @@ const createInvoice = async () => {
       alert(`Ошибка: ${resp.Message || JSON.stringify(resp)}`);
     }
   } catch (e) {
-    alert(`Ошибка: ${e.message}`);
+    if (e.code !== 'KASPI_SESSION_EXPIRED') alert(`Ошибка: ${e.message}`);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Выставить счёт';
@@ -447,7 +467,7 @@ const cancelInvoice = async () => {
     await apiPost('/api/invoice/cancel', { operationId: currentOpId });
     refreshInvoice();
   } catch (e) {
-    alert(`Ошибка: ${e.message}`);
+    if (e.code !== 'KASPI_SESSION_EXPIRED') alert(`Ошибка: ${e.message}`);
   }
 };
 
@@ -564,7 +584,7 @@ const createQr = async () => {
       alert(`Ошибка: ${resp.Message || JSON.stringify(resp)}`);
     }
   } catch (e) {
-    alert(`Ошибка: ${e.message}`);
+    if (e.code !== 'KASPI_SESSION_EXPIRED') alert(`Ошибка: ${e.message}`);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Создать QR';
@@ -664,7 +684,7 @@ const cancelFromHistory = async () => {
     showHistoryDetail(historyOpId);
     loadHistory();
   } catch (e) {
-    alert(`Ошибка: ${e.message}`);
+    if (e.code !== 'KASPI_SESSION_EXPIRED') alert(`Ошибка: ${e.message}`);
   }
 };
 
@@ -809,6 +829,7 @@ const createRefund = async () => {
     // Refresh detail
     showSalesDetail(salesOpId, 0);
   } catch (e) {
+    if (e.code === 'KASPI_SESSION_EXPIRED') return;
     msg.className = 'status-bar status-err';
     msg.textContent = `Ошибка: ${e.message}`;
     msg.classList.remove('hidden');
@@ -821,8 +842,12 @@ const createRefund = async () => {
 // ─── Expose to HTML onclick handlers ───
 
 Object.assign(window, {
+  kaspiSessionExpiredMessage: KASPI_SESSION_EXPIRED_MESSAGE,
   sendPhone,
   verifyOtp,
+  showAuthMsg,
+  stopInvoicePolling,
+  stopQrPolling,
   resetAuth,
   logout,
   connectServer,

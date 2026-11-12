@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
-import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
+import { requestKaspi } from '../kaspiApi.js';
 import { requireSession } from '../merchantSession.js';
 
 import { requirePayment } from '../polling.js';
@@ -16,7 +16,7 @@ router.post(
   '/create',
   requirePayment(null, 'qrOperationId', 'body'),
   requireAmount('returnAmount'),
-  async (req, res) => {
+  async (req, res, next) => {
     const { qrOperationId, returnAmount } = req.body;
     try {
       const url = `${KASPI_QRPAY_URL}/v01/kaspi-qr/history-pos-return`;
@@ -25,15 +25,9 @@ router.post(
         QrOperationId: Number(qrOperationId),
         DeviceInterface: 'Pos',
       });
-      const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-      const resp = await loggedFetch(url, {
-        method: 'POST',
-        headers,
-        body: payload,
-      });
-      res.json(await resp.json());
+      res.json(await requestKaspi(url, req.session, { method: 'POST', body: payload }));
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      next(err);
     }
   },
 );

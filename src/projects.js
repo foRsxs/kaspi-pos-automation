@@ -23,7 +23,10 @@ export const selectKaspiProject = (req, res, next) => {
 export const authenticateProject = (req, res, next) => {
   if (!req.get('Authorization')) {
     const session = sessionForRequest(req);
-    if (!session) return res.status(401).json({ error: 'Войдите в админку или укажите Bearer API-ключ' });
+    if (!session)
+      return res
+        .status(401)
+        .json({ error: 'Войдите в админку или укажите Bearer API-ключ', code: 'AUTH_SESSION_EXPIRED' });
     if (session.mustChangePassword)
       return res
         .status(403)

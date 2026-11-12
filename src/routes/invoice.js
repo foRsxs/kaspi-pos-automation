@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { KASPI_QRPAY_URL } from '../config.js';
-import { loggedFetch, signedQrPayHeaders } from '../helpers.js';
+import { requestKaspi } from '../kaspiApi.js';
 import { requireSession } from '../merchantSession.js';
 import { trackPayment, requirePayment } from '../polling.js';
 
@@ -14,35 +14,31 @@ router.use(requireSession);
 
 // ─── Client info ───
 
-router.get('/client-info', async (req, res) => {
+router.get('/client-info', async (req, res, next) => {
   const { phoneNumber } = req.query;
   if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/client-info?phoneNumber=${encodeURIComponent(phoneNumber)}`;
-    const resp = await loggedFetch(url, { headers: signedQrPayHeaders(url, req.session) });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── Create invoice ───
 
-router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res) => {
+router.post('/create', requireActiveProject, requireAmount('amount'), async (req, res, next) => {
   const { phoneNumber, amount, comment } = req.body;
   if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/create`;
     const payload = JSON.stringify({ PhoneNumber: phoneNumber, Amount: amount, Comment: comment || '' });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
+    const kaspiResponse = await requestKaspi(url, req.session, {
       method: 'POST',
-      headers,
       body: payload,
     });
-    const kaspiResponse = await resp.json();
     const d = kaspiResponse.Data;
     if (d && d.QrOperationId) {
       const persisted = trackPayment(
@@ -68,59 +64,46 @@ router.post('/create', requireActiveProject, requireAmount('amount'), async (req
     }
     res.json(kaspiResponse);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── Invoice details ───
 
-router.get('/details', requirePayment('invoice', 'operationId'), async (req, res) => {
+router.get('/details', requirePayment('invoice', 'operationId'), async (req, res, next) => {
   const { operationId } = req.query;
 
   try {
     const url = `${KASPI_QRPAY_URL}/v02/remote/details?operationId=${operationId}`;
-    const resp = await loggedFetch(url, { headers: signedQrPayHeaders(url, req.session) });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── Cancel invoice ───
 
-router.post('/cancel', requirePayment('invoice', 'operationId', 'body'), async (req, res) => {
+router.post('/cancel', requirePayment('invoice', 'operationId', 'body'), async (req, res, next) => {
   const { operationId } = req.body;
 
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/cancel`;
     const payload = JSON.stringify({ qrOperationId: Number(operationId) });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
-      method: 'POST',
-      headers,
-      body: payload,
-    });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session, { method: 'POST', body: payload }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // ─── Invoice history ───
 
-router.post('/history', async (req, res) => {
+router.post('/history', async (req, res, next) => {
   try {
     const url = `${KASPI_QRPAY_URL}/v01/remote/history`;
     const payload = JSON.stringify({ MaxResult: 20 });
-    const headers = { ...signedQrPayHeaders(url, req.session, payload), 'Content-Type': 'application/json' };
-    const resp = await loggedFetch(url, {
-      method: 'POST',
-      headers,
-      body: payload,
-    });
-    res.json(await resp.json());
+    res.json(await requestKaspi(url, req.session, { method: 'POST', body: payload }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 

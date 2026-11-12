@@ -13,6 +13,7 @@ const adminState = {
   pendingAction: null,
   connectingProjectId: null,
   connectReturnTo: 'dashboard',
+  bankNotice: null,
 };
 const adminFetch = (path, options = {}) => window.adminRequest(path, options);
 
@@ -22,6 +23,7 @@ const clearAdminUI = () => {
   adminState.pendingAction = null;
   adminState.connectingProjectId = null;
   adminState.connectReturnTo = 'dashboard';
+  adminState.bankNotice = null;
   $('projectsGrid').replaceChildren();
   $('archivedProjects').replaceChildren();
   $('projectCount').textContent = '0';
@@ -413,12 +415,14 @@ const updateBankProjectStatus = () => {
   const archived = project?.status === 'archived';
   const disabled = project?.status === 'disabled';
   const status = $('selectedProjectStatus');
-  status.textContent = archived
+  if (adminState.bankNotice?.projectId !== selectedProject()) adminState.bankNotice = null;
+  const projectMessage = archived
     ? 'Архивный проект: доступны история и возвраты. Вход по SMS и создание оплат отключены.'
     : disabled
       ? 'Проект отключён: доступны история и возвраты, создание новых оплат и QR отключено.'
       : '';
-  status.classList.toggle('hidden', !archived && !disabled);
+  status.textContent = [projectMessage, adminState.bankNotice?.message].filter(Boolean).join(' ');
+  status.classList.toggle('hidden', !status.textContent);
   if (archived) {
     $('invoiceTab').classList.add('hidden');
     $('qrTab').classList.add('hidden');
@@ -429,6 +433,53 @@ const updateBankProjectStatus = () => {
     $(id).disabled = archived || disabled;
   $('tabInvoice').classList.toggle('hidden', archived);
   $('tabQr').classList.toggle('hidden', archived);
+};
+
+const showBankUnavailable = (projectId, message) => {
+  if (selectedProject() !== projectId) return;
+  adminState.bankNotice = { projectId, message };
+  updateBankProjectStatus();
+};
+
+const clearBankNotice = (projectId) => {
+  if (selectedProject() !== projectId || adminState.bankNotice?.projectId !== projectId) return;
+  adminState.bankNotice = null;
+  updateBankProjectStatus();
+};
+
+const handleKaspiSessionExpired = async (projectId, message) => {
+  if (selectedProject() !== projectId) return false;
+  window.stopInvoicePolling?.();
+  window.stopQrPolling?.();
+  window.clearSession(projectId);
+  const project = adminState.projects.find((item) => item.id === projectId);
+  if (!project) return false;
+
+  project.connection = { ...(project.connection || {}), connected: false };
+  adminState.bankNotice = null;
+  renderProjects();
+  if ($('projectDialog').open && adminState.editId === projectId) updateProjectSettingsInfo(project);
+
+  const sessionMessage = message || window.kaspiSessionExpiredMessage;
+  if (project.status === 'archived') {
+    adminState.bankNotice = {
+      projectId,
+      message: 'Подключение к Kaspi Pay потеряно. Архивный проект нельзя переподключить по SMS.',
+    };
+    updateBankProjectStatus();
+    return false;
+  }
+
+  if ($('connectDialog').open && adminState.connectingProjectId === projectId) {
+    $('authProjectContext').textContent = `${project.name || project.id} · подключение к Kaspi Pay потеряно`;
+    window.showAuthMsg(sessionMessage, 'info');
+    return true;
+  }
+
+  const returnTo = $('bankWorkspace').classList.contains('hidden') ? 'dashboard' : 'workspace';
+  await connectProject(projectId, { forceLogin: true, returnTo });
+  window.showAuthMsg(sessionMessage, 'info');
+  return $('connectDialog').open && adminState.connectingProjectId === projectId;
 };
 
 const setProjectAccountMessage = (message, type = 'info') => {
@@ -838,4 +889,7 @@ Object.assign(window, {
   clearSecretDialog,
   closeConfirmDialog,
   goToDashboard,
+  handleKaspiSessionExpired,
+  showBankUnavailable,
+  clearBankNotice,
 });
